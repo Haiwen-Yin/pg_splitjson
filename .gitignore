@@ -1,0 +1,9 @@
+*.o
+*.so
+*.bc
+results/
+regression.diffs
+regression.out
+tmp_check/
+.lab/
+/build_output/
