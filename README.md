@@ -2,7 +2,7 @@
 
 **PG SplitJSON · `pg_splitjson` · 0.1.0**
 
-**English** | [简体中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Project introduction](docs/introduction.md) · [API reference](docs/api-reference.md)
+**English** | [简体中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Project introduction](docs/introduction.md) · [API reference](docs/api-reference.md) · [Release note](RELEASE_NOTE.md)
 
 Licensed under the [Apache License 2.0](LICENSE) (`Apache-2.0`).
 

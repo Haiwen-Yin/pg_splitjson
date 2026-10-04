@@ -7,6 +7,7 @@ Documentation for **PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.1.0
 | Document | English | 简体中文 |
 | --- | --- | --- |
 | Overview, installation and quick start | [README](../README.md) | [使用说明](../README.zh-CN.md) |
+| 0.1.0 features, installation and compatibility | [Release note](../RELEASE_NOTE.md) | [发布说明](../RELEASE_NOTE.zh-CN.md) |
 | Short and full project introductions | [Introduction](introduction.md) | [项目介绍](introduction.zh-CN.md) |
 | Design background, workloads and operations | [Design and selection](design-rationale.md) | [设计与场景指南](design-rationale.zh-CN.md) |
 | Implemented arrays and query rewriting | [Arrays and queries](roadmap.md) | [数组与查询](roadmap.zh-CN.md) |

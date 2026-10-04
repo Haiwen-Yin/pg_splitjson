@@ -2,7 +2,7 @@
 
 **PG SplitJSON · `pg_splitjson` · 0.1.0**
 
-[English](README.md) | **简体中文** · [文档目录](docs/README.zh-CN.md) · [项目介绍](docs/introduction.zh-CN.md) · [API 参考](docs/api-reference.zh-CN.md)
+[English](README.md) | **简体中文** · [文档目录](docs/README.zh-CN.md) · [项目介绍](docs/introduction.zh-CN.md) · [API 参考](docs/api-reference.zh-CN.md) · [发布说明](RELEASE_NOTE.zh-CN.md)
 
 本项目采用 [Apache License 2.0](LICENSE)（`Apache-2.0`）。
 

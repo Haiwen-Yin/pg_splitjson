@@ -7,6 +7,7 @@
 | 文档 | English | 简体中文 |
 | --- | --- | --- |
 | 概览、安装和快速使用 | [README](../README.md) | [使用说明](../README.zh-CN.md) |
+| 0.1.0 功能、安装与兼容性 | [Release note](../RELEASE_NOTE.md) | [发布说明](../RELEASE_NOTE.zh-CN.md) |
 | 短介绍和完整项目介绍 | [Introduction](introduction.md) | [项目介绍](introduction.zh-CN.md) |
 | 设计背景、场景与运维 | [Design and selection](design-rationale.md) | [设计与场景指南](design-rationale.zh-CN.md) |
 | 已实现数组与查询改写 | [Arrays and queries](roadmap.md) | [数组与查询](roadmap.zh-CN.md) |
