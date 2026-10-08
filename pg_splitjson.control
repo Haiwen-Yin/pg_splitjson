@@ -1,5 +1,5 @@
 comment = 'PostgreSQL Split JSON Storage Extension'
-default_version = '0.1.0'
+default_version = '0.2.0'
 module_pathname = '$libdir/pg_splitjson'
 relocatable = false
 schema = 'splitjson'

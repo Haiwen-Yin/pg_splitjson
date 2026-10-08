@@ -1,8 +1,8 @@
-# PG SplitJSON 0.1.0 API reference
+# PG SplitJSON 0.2.0 API reference
 
 **English** | [简体中文](api-reference.zh-CN.md) · [Documentation](README.md)
 
-These are the business APIs of **PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.1.0**. Install `pg_splitjson`; use the `splitjson` schema. Signatures follow [the installation SQL](../sql/pg_splitjson--0.1.0.sql).
+These are the business APIs of **PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.2.0**. Install `pg_splitjson`; use the `splitjson` schema. Signatures follow [the installation SQL](../sql/pg_splitjson--0.2.0.sql).
 
 ## Shared conventions
 
@@ -64,6 +64,29 @@ splitjson.create_path_index(
     p_table regclass, p_name text, p_path text[]
 ) RETURNS regclass
 
+splitjson.grant_access(
+    p_table regclass, p_role regrole, p_mode text
+) RETURNS void
+
+splitjson.check_table(
+    p_table regclass, p_check_data boolean DEFAULT false
+) RETURNS jsonb
+
+splitjson.check_all(
+    p_check_data boolean DEFAULT false
+) RETURNS SETOF jsonb
+
+splitjson.table_stats(p_table regclass) RETURNS jsonb
+splitjson.rename_table(p_table regclass, p_name text) RETURNS regclass
+splitjson.set_business_not_null(p_table regclass, p_column text,
+                                p_enabled boolean DEFAULT true) RETURNS void
+splitjson.set_business_default(p_table regclass, p_column text,
+                               p_value jsonb) RETURNS void
+splitjson.add_field_check(p_table regclass, p_name text, p_path jsonb,
+                          p_type text, p_required boolean DEFAULT false) RETURNS void
+splitjson.index_ddl(p_table regclass, p_name text, p_path jsonb,
+                    p_kind text DEFAULT 'jsonb', p_unique boolean DEFAULT false) RETURNS text
+
 splitjson.create_path_index(
     p_table regclass, p_name text, p_path text[], p_kind text
 ) RETURNS regclass
@@ -92,6 +115,10 @@ Defaults, constraints, indexes, triggers, column collations and permissions are 
 ### drop_table
 
 Removes the managed view, private table and mapping in a transaction. Requires view ownership or the owner's role privileges. It does not use CASCADE: resolve dependent objects first. Use this API rather than directly dropping or renaming managed objects.
+
+### Operational management
+
+`grant_access` grants an existing role `read` or `write` access to the business view and the minimum helper/update functions; it never grants private storage access. `check_table` validates one mapping and optionally restores every row, while `check_all` checks every managed mapping. `table_stats` returns PostgreSQL statistics and relation sizes for the private table. `rename_table` changes a managed view name within its business schema. `set_business_not_null`, `set_business_default` and `add_field_check` apply typed business constraints through the managed storage. `index_ddl` returns reviewed `CREATE INDEX [CONCURRENTLY]` SQL; execute it outside a transaction and inspect invalid indexes.
 
 ## Updates
 

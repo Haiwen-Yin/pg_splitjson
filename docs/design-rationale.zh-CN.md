@@ -2,7 +2,7 @@
 
 [English](design-rationale.md) | **简体中文** · [文档目录](README.zh-CN.md)
 
-本文解释 **PostgreSQL Split JSON Storage Extension（PG SplitJSON）0.1.0** 的设计选择，起点是尹海文（胖头鱼的鱼缸）于 2026-09-10 发表的[《胖头鱼的技术专栏-468 JSON改一个字段，凭什么要重写整篇？（20260910）》](https://blog.csdn.net/yhw1809/article/details/164757146)。原文讨论高频更新、写放大、关系存储之上的 JSON 访问，以及常变字段拆分。本文将这些思路展开为已实现 PG 扩展的设计说明；项目性能数字仍以验证报告为依据。
+本文解释 **PostgreSQL Split JSON Storage Extension（PG SplitJSON）0.2.0** 的设计选择，起点是尹海文（胖头鱼的鱼缸）于 2026-09-10 发表的[《胖头鱼的技术专栏-468 JSON改一个字段，凭什么要重写整篇？（20260910）》](https://blog.csdn.net/yhw1809/article/details/164757146)。原文讨论高频更新、写放大、关系存储之上的 JSON 访问，以及常变字段拆分。本文将这些思路展开为已实现 PG 扩展的设计说明；项目性能数字仍以[验证报告](validation.zh-CN.md)为依据。
 
 ## 从文章思路到 PG SplitJSON
 
@@ -10,7 +10,7 @@
 
 原文给 PostgreSQL 的替代方案是：高频字段拆为普通列，半静态属性保留在 JSONB 中。关于 JSON Relational Duality View 的讨论也体现了更一般的思想：JSON 可以是关系存储之上的应用接口。PG SplitJSON 将这个思想用于同一行内声明的对象及固定数组路径，保留冷文档模板，把每个已存在热值只存一份到独立列，通过业务视图还原文档。
 
-| 原文中的设计思路 | 0.1.0 中的实现 | 边界 |
+| 原文中的设计思路 | 0.2.0 中的实现 | 边界 |
 | --- | --- | --- |
 | 常变字段与大属性分开 | 声明的 JSONB 热列 + 冷模板 | 已存在热字段/子树通过专用 API 更新 |
 | 应用边界保持 JSON 便利 | 视图提供完整 doc 和业务列 | 完整读取需要还原 doc，集成使用显式 API |
@@ -36,7 +36,7 @@ flowchart LR
     E --> F
 ```
 
-扩展里的“热字段”指经常更新的字段；PG 的 **HOT** 指 Heap-Only Tuple 优化，两者有不同条件。HOT 要求不修改索引引用列（汇总型索引有例外），且新元组能放在同一页。变化热列上的 B-tree 可能阻止 HOT，但仍允许冷 TOAST 复用。因此减少冷值写入并不意味着零 WAL、零索引维护、没有新行版本或不需要 vacuum。详见 [PG18 HOT](https://www.postgresql.org/docs/18/storage-hot.html)和项目物理验证。
+扩展里的“热字段”指经常更新的字段；PG 的 **HOT** 指 Heap-Only Tuple 优化，两者有不同条件。HOT 要求不修改索引引用列（汇总型索引有例外），且新元组能放在同一页。变化热列上的 B-tree 可能阻止 HOT，但仍允许冷 TOAST 复用。因此减少冷值写入并不意味着零 WAL、零索引维护、没有新行版本或不需要 vacuum。详见 [PG18 HOT](https://www.postgresql.org/docs/18/storage-hot.html)和项目[物理验证](validation.zh-CN.md)。
 
 ## 选择存储模型
 
@@ -63,7 +63,7 @@ flowchart LR
 | 物流 | latest.state、latest.timestamp | 常追加的历史仍会重写其值，可考虑事件表 |
 | 半静态配置 | 仅选择确实高频的字段 | 更新稀少时原生 JSONB 可能已经足够 |
 
-热路径不能重叠，同时声明 `stats` 与 `stats.count` 无效，应选择希望替换的单元。修改热字段父路径会回退；已存在热对象/数组的内部子路径可以只更新热列。0.1.0 不支持动态布局变化，应在导入数据前选定路径；后续调整布局使用新的受管目标迁移。
+热路径不能重叠，同时声明 `stats` 与 `stats.count` 无效，应选择希望替换的单元。修改热字段父路径会回退；已存在热对象/数组的内部子路径可以只更新热列。0.2.0 不支持动态布局变化，应在导入数据前选定路径；后续调整布局使用新的受管目标迁移。
 
 独立热列仍位于**同一个 heap 行**，相同 ID 上的库存与状态更新需要按行锁串行执行。本设计减少冷写入，不消除同一行的锁竞争；希望各项独立写入时，可考虑分行。专用 numeric 增量是原子的，但并不自动保证库存非负、价格小数位等业务规则，若需要数据库强制这些规则，可考虑带显式约束的关系模型或合适的 domain 业务列，并为 JSON 更新设计验证；热 JSONB 值不会自动转换为这些列类型。
 
@@ -118,7 +118,7 @@ autovacuum 参数应依据实际更新速率、表大小、长事务快照和 I/
 
 ## 评估完整负载
 
-用相同数据与等价索引比较原生 JSONB、显式列拆分和 PG SplitJSON，分别测量单字段、全热批量、混合/结构更新及完整文档读取，并覆盖独立提交、同 ID/不同 ID 并发写，以及热列有无索引。现有 WAL 对照测量的是一个具体负载，不包含这些全部维度。
+用相同数据与等价索引比较原生 JSONB、显式列拆分和 PG SplitJSON，分别测量单字段、全热批量、混合/结构更新及完整文档读取，并覆盖独立提交、同 ID/不同 ID 并发写，以及热列有无索引。现有 [WAL 对照](validation.zh-CN.md)测量的是一个具体负载，不包含这些全部维度。
 
 长期观察延迟和吞吐、WAL 字节、heap/索引/TOAST 大小、HOT 比例、锁等待和 vacuum 行为。确认应用更新确实符合快速路径条件，使用 `explain_find_ids` 检查查询计划。WAL 记录数、WAL 字节、脏块和物理设备写入量是不同指标；第三方的记录数或块数不能直接与本项目的 WAL 字节实验比较。
 
@@ -132,4 +132,4 @@ autovacuum 参数应依据实际更新速率、表大小、长事务快照和 I/
 - [PostgreSQL 18 TOAST](https://www.postgresql.org/docs/18/storage-toast.html) 与 [HOT](https://www.postgresql.org/docs/18/storage-hot.html)：未变外置值复用与 heap 更新/索引成本。
 - [PostgreSQL 18 分支 jsonfuncs.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/adt/jsonfuncs.c)：jsonb_set 构造结果 JSONB，不提供已存值的字节补丁接口。
 - [PostgreSQL 18 统计](https://www.postgresql.org/docs/18/monitoring-stats.html)与[常规 vacuum](https://www.postgresql.org/docs/18/routine-vacuuming.html)：统计解释与维护。
-- PG SplitJSON 验证报告和 [API 参考](api-reference.zh-CN.md)：实测行为与 0.1.0 约定。
+- [PG SplitJSON 验证报告](validation.zh-CN.md)和 [API 参考](api-reference.zh-CN.md)：实测行为与 0.2.0 约定。

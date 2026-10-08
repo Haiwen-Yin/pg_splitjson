@@ -1,16 +1,16 @@
 # PostgreSQL Split JSON Storage Extension
 
-**PG SplitJSON · `pg_splitjson` · 0.1.0**
+**PG SplitJSON · `pg_splitjson` · 0.2.0**
 
 [English](README.md) | **简体中文** · [文档目录](docs/README.zh-CN.md) · [项目介绍](docs/introduction.zh-CN.md) · [API 参考](docs/api-reference.zh-CN.md) · [发布说明](RELEASE_NOTE.zh-CN.md)
 
 本项目采用 [Apache License 2.0](LICENSE)（`Apache-2.0`）。
 
-面向 PostgreSQL 18 的 JSON 高频更新扩展。将声明的热路径存入独立普通列，将其余内容存入可 TOAST 的 `splitjson.cold` 模板；业务通过包含 id、doc 和可选普通业务列的视图读写。**已存在的热路径及对象/数组子树通过专用 API 更新时，不读取或重写冷模板。0.1.0 同时支持固定数组热路径和 SELECT 自动查询改写。**
+面向 PostgreSQL 18 的 JSON 高频更新扩展。将声明的热路径存入独立普通列，将其余内容存入可 TOAST 的 `splitjson.cold` 模板；业务通过包含 id、doc 和可选普通业务列的视图读写。**已存在的热路径及对象/数组子树通过专用 API 更新时，不读取或重写冷模板。0.2.0 同时支持固定数组热路径和 SELECT 自动查询改写。**
 
-0.1.0 是可编译、已验证的初版实现，采用业务视图和专用更新 API。`splitjson.cold` 是新的内部封装格式，负载复用 PG JSONB；并非替换 PG 内核的 JSONB 格式或提供原生隐藏列。
+0.2.0 是包含生产硬化、事务升级和恢复证据的可编译、已验证版本，采用业务视图和专用更新 API。`splitjson.cold` 是新的内部封装格式，负载复用 PG JSONB；并非替换 PG 内核的 JSONB 格式或提供原生隐藏列。
 
-安装名为 `pg_splitjson`，SQL API 为 `splitjson.*`。PG 保留 schema 的 `pg_` 前缀，因此 API 和内部 schema 分别为 `splitjson`、`splitjson_storage`。版本固定为 **0.1.0**。
+安装名为 `pg_splitjson`，SQL API 为 `splitjson.*`。PG 保留 schema 的 `pg_` 前缀，因此 API 和内部 schema 分别为 `splitjson`、`splitjson_storage`。版本固定为 **0.2.0**。
 
 ## 设计背景
 
@@ -170,7 +170,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.events TO app_role;
 
 ## 编译和验证
 
-发布产物统一存放在 `build_output/<版本>/`。0.1.0 的源码 ZIP 和 SHA-256 文件分别为 `build_output/0.1.0/pg_splitjson-0.1.0.zip`、`build_output/0.1.0/pg_splitjson-0.1.0.zip.sha256`。Git 忽略该生成目录。
+发布产物统一存放在 `build_output/<版本>/`。0.2.0 的源码 ZIP 和 SHA-256 文件分别为 `build_output/0.2.0/pg_splitjson-0.2.0.zip`、`build_output/0.2.0/pg_splitjson-0.2.0.zip.sha256`。Git 忽略该生成目录。
 
 依赖：PG18 server headers/PGXS、C 编译器、make，以及 PostgreSQL 自带 PL/pgSQL。完整验证还需 PG18 的 `pageinspect`（仅测试使用）。在独立 PG18 安装前缀中执行以下命令；`make install` 会写入所选安装目录：
 
@@ -179,15 +179,17 @@ make PG_CONFIG=/path/to/isolated/pg18/bin/pg_config
 make PG_CONFIG=/path/to/isolated/pg18/bin/pg_config install
 ```
 
-在专用测试主机上以 root 执行完整验证，使用已有非 root OS 用户及要复制的 PG18 安装：
+已授权远端环境的完整自动验证：
 
 ```sh
-PG_SPLITJSON_RUN_AS=postgres bash scripts/lab.sh /path/to/pg18
+./scripts/test-remote.sh
+# 或指定主机、只读复制来源
+./scripts/test-remote.sh root@10.10.10.131 /usr/local/pgsql-18.6
 ```
 
-脚本创建全新临时安装、PGDATA 和私有 socket，只停止自身实验实例。指定 PG18 安装仅作为只读复制来源。
+脚本复制 PG 到唯一 `/tmp/pg_splitjson-lab.*` 安装前缀，验证安装路径未指向原目录，使用全新 PGDATA、私有 Unix socket 和 `listen_addresses=''`。由已有 `pgsql` OS 用户启动，所有 `pg_ctl` 操作只指向实验 PGDATA；退出时停止实验实例。没有连接、修改或重启已有实例。远端实验目录保留，本地结果在 `.lab/`，不会提交数据库文件或二进制。
 
-测试包括 256 个不同形状文档往返、批量单次写入、原子增量、普通业务列、迁移回滚、权限、并发和快照、索引计划、TOAST 指针及分块复用，以及 `pg_dump/pg_restore` 后全部新增 API。可使用包内测试脚本复现这些检查。
+测试包括 256 个不同形状文档往返、批量单次写入、原子增量、普通业务列、迁移回滚、权限、并发和快照、索引计划、TOAST 指针及分块复用，以及 `pg_dump/pg_restore` 后全部新增 API。测试脚本和 [验证报告](docs/validation.zh-CN.md) 提供具体证据。
 
 ## 备份和边界
 
@@ -204,6 +206,6 @@ SELECT splitjson.drop_table('public.events');
 
 PG MVCC 仍生成新 heap tuple；小的内联模板仍随行版本复制。热值自身很大时仍可能产生自己的 TOAST 更新。优化目标是避免重写不变的大冷值；完整 JSON 读取需要重组，普通 UPDATE 也不承诺快速更新。
 
-本项目早期未发布原型名称为 `pgjson`。新名称仍为 0.1.0，未提供旧原型或更早未发布 0.1.0 构建的原地升级。不要覆盖已加载的库来在线升级相同版本，应逻辑迁移到新安装；原型数据通过逻辑导出写入新建的 splitjson 受管视图，或用 migrate_table 接入普通 JSONB 表。历史日志保留旧名。
+本项目早期未发布原型名称为 `pgjson`。正式 0.2.0 升级只接受正式 0.1.0 目录形状；更早原型或已改动布局应新安装并逻辑迁移。不要覆盖已加载的库在线升级；原型数据通过逻辑导出写入新建的 splitjson 受管视图，或用 migrate_table 接入普通 JSONB 表。历史日志保留旧名。
 
-需求、决策和实施记录由 OpenSpec 管理。[数组与查询指南](docs/roadmap.zh-CN.md)说明 0.1.0 已实现的行为与边界。通用 duality view 不属于项目范围。后续可继续评估约束/默认值和动态布局迁移。
+需求、决策和实施记录由 [OpenSpec](openspec/) 管理。[数组与查询指南](docs/roadmap.zh-CN.md)说明 0.2.0 已实现的行为与边界。通用 duality view 不属于项目范围。布局变化仍需创建新的受管目标并安排逻辑迁移；类型化业务列支持约束和默认值。

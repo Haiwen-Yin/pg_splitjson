@@ -2,7 +2,7 @@
 
 **English** | [简体中文](design-rationale.zh-CN.md) · [Documentation](README.md)
 
-This guide explains the design choices of **PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.1.0**. Its starting point is Yin Haiwen's (尹海文, 胖头鱼的鱼缸) article, [“胖头鱼的技术专栏-468 JSON改一个字段，凭什么要重写整篇？（20260910）”](https://blog.csdn.net/yhw1809/article/details/164757146), published on 2026-09-10. The article discusses frequent updates, write amplification, JSON access over relational storage, and extracting frequently changed fields. This guide develops those ideas for the implemented PostgreSQL extension; the validation report remains the source of project measurements.
+This guide explains the design choices of **PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.2.0**. Its starting point is Yin Haiwen's (尹海文, 胖头鱼的鱼缸) article, [“胖头鱼的技术专栏-468 JSON改一个字段，凭什么要重写整篇？（20260910）”](https://blog.csdn.net/yhw1809/article/details/164757146), published on 2026-09-10. The article discusses frequent updates, write amplification, JSON access over relational storage, and extracting frequently changed fields. This guide develops those ideas for the implemented PostgreSQL extension; the [validation report](validation.md) remains the source of project measurements.
 
 ## From the article to PG SplitJSON
 
@@ -10,7 +10,7 @@ The useful design question is how much unchanged data the storage engine must pr
 
 The article's PostgreSQL alternative extracts frequently changed fields into ordinary columns and retains semistatic attributes in JSONB. Its discussion of JSON Relational Duality Views also highlights a broader idea: JSON can be an application interface over relational storage. PG SplitJSON applies that idea to declared object and fixed array paths within one row. It keeps the cold document template and stores each present hot value once in a separate column, reconstructing the document through a business view.
 
-| Design idea from the article | Implementation in 0.1.0 | Boundary |
+| Design idea from the article | Implementation in 0.2.0 | Boundary |
 | --- | --- | --- |
 | Separate frequently changed fields from large attributes | Declared hot JSONB columns plus a cold template | Existing hot fields/subtrees use dedicated APIs |
 | Keep JSON convenient at the application boundary | View exposes a complete doc and business columns | Full reads reconstruct doc; integration uses explicit APIs |
@@ -36,7 +36,7 @@ flowchart LR
     E --> F
 ```
 
-A “hot field” is the extension's frequently updated field. PostgreSQL **HOT** means Heap-Only Tuple optimization and has separate requirements: indexed columns must not change, subject to the summarizing-index exception, and the new tuple must fit on the same page. A B-tree on a changed hot column may prevent HOT while still allowing cold TOAST reuse. Smaller cold writes therefore do not imply zero WAL, zero index work, zero row versions or no vacuum requirement. See [PG18 HOT](https://www.postgresql.org/docs/18/storage-hot.html) and the project's physical validation.
+A “hot field” is the extension's frequently updated field. PostgreSQL **HOT** means Heap-Only Tuple optimization and has separate requirements: indexed columns must not change, subject to the summarizing-index exception, and the new tuple must fit on the same page. A B-tree on a changed hot column may prevent HOT while still allowing cold TOAST reuse. Smaller cold writes therefore do not imply zero WAL, zero index work, zero row versions or no vacuum requirement. See [PG18 HOT](https://www.postgresql.org/docs/18/storage-hot.html) and the project's [physical validation](validation.md).
 
 ## Choose the storage model
 
@@ -63,7 +63,7 @@ Only index hot paths that need equality searches. A storage declaration creates 
 | Logistics | latest.state, latest.timestamp | Frequently appended history still rewrites its value; consider an event table |
 | Semistatic configuration | Only fields shown to be frequent | Ordinary JSONB may be sufficient when updates are rare |
 
-Hot paths cannot overlap. Declaring both `stats` and `stats.count` is invalid; choose the unit you intend to replace. Updating a hot parent uses fallback; descendants inside an existing hot object/array can update that hot column alone. Dynamic layout changes are not supported in 0.1.0, so choose paths before loading data and use a newly managed target for a later layout migration.
+Hot paths cannot overlap. Declaring both `stats` and `stats.count` is invalid; choose the unit you intend to replace. Updating a hot parent uses fallback; descendants inside an existing hot object/array can update that hot column alone. Dynamic layout changes are not supported in 0.2.0, so choose paths before loading data and use a newly managed target for a later layout migration.
 
 Separate hot columns remain in the **same heap row**. Updates to stock and status on the same ID serialize on a row lock; this design reduces cold writes, not same-row lock contention. For independently writable items, consider separate rows. Dedicated numeric increments are atomic, but they do not by themselves enforce nonnegative stock, price scale or other business invariants. For database-enforced rules, consider an explicitly constrained relational model or suitable domain-backed business columns, and design validation for JSON updates. Hot JSONB values are not automatically converted to those column types.
 
@@ -118,7 +118,7 @@ Choose autovacuum settings for the actual update rate, table size, long-lived sn
 
 ## Evaluate the complete workload
 
-Compare native JSONB, explicit column separation and PG SplitJSON using equivalent data and indexes. Measure single-field, all-hot batch, mixed/structural updates and full-document reads. Include independent commits, concurrent writers on the same and different IDs, and indexed vs unindexed hot columns. The existing WAL comparison measures one specific workload, not these entire dimensions.
+Compare native JSONB, explicit column separation and PG SplitJSON using equivalent data and indexes. Measure single-field, all-hot batch, mixed/structural updates and full-document reads. Include independent commits, concurrent writers on the same and different IDs, and indexed vs unindexed hot columns. The existing [WAL comparison](validation.md) measures one specific workload, not these entire dimensions.
 
 Track latency and throughput, WAL bytes, heap/index/TOAST size, HOT rates, lock waits and vacuum behavior over time. Verify that the application's updates actually qualify for the fast path, and inspect `explain_find_ids` for query plans. WAL records, WAL bytes, dirty blocks and physical device writes are different measures; third-party record counts or block counts are not directly comparable to this project's WAL-byte benchmark.
 
@@ -132,4 +132,4 @@ For implemented array operations, query forms and fallback boundaries, see the [
 - [PostgreSQL 18 TOAST](https://www.postgresql.org/docs/18/storage-toast.html) and [HOT](https://www.postgresql.org/docs/18/storage-hot.html): unchanged external values and heap-update/index costs.
 - [PostgreSQL 18 branch, jsonfuncs.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/adt/jsonfuncs.c): jsonb_set constructs the resulting JSONB value, without a stored-value patch API.
 - [PostgreSQL 18 statistics](https://www.postgresql.org/docs/18/monitoring-stats.html) and [routine vacuuming](https://www.postgresql.org/docs/18/routine-vacuuming.html): counter interpretation and maintenance.
-- PG SplitJSON validation and [API reference](api-reference.md): measured behavior and the 0.1.0 contract.
+- [PG SplitJSON validation](validation.md) and [API reference](api-reference.md): measured behavior and the 0.2.0 contract.

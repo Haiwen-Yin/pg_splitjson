@@ -2,7 +2,17 @@
 
 **English** | [简体中文](CHANGELOG.zh-CN.md) · [Documentation](docs/README.md)
 
-## 0.1.0
+## 0.2.0
+
+Production-hardening release for PostgreSQL 18.
+
+- Formal transactional upgrade from the official 0.1.0 catalog, with preflight rejection of unknown historical layouts.
+- Least-privilege API grants, mapping drift checks, protected managed DDL, controlled rename/drop, business defaults/checks, statistics and index-maintenance helpers.
+- Portable cold binary I/O, planner-registration validation and bounded C safety checks.
+- Recovery and operations evidence for crash recovery, PITR, streaming replay/promotion, backup/restore, randomized differential testing and sustained workload maintenance.
+- CI definitions for normal PG18, cassert and sanitizer builds, plus a clean versioned source-package generator.
+
+## 0.2.0
 
 The initial unpublished version is named PostgreSQL Split JSON Storage Extension, with installation identifier `pg_splitjson` and API schema `splitjson`.
 

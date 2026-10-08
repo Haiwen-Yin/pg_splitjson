@@ -110,6 +110,11 @@ SELECT assert_true(to_regclass('public.lifecycle') IS NULL AND NOT EXISTS(SELECT
 
 CREATE ROLE splitjson_reader;
 CREATE ROLE splitjson_writer;
+GRANT EXECUTE ON FUNCTION splitjson.get_field(regclass,bigint,text[]),splitjson.find_ids(regclass,text[],jsonb)
+    TO splitjson_reader,splitjson_writer;
+GRANT EXECUTE ON FUNCTION splitjson.set_field(regclass,bigint,text[],jsonb,boolean),
+    splitjson.set_fields(regclass,bigint,jsonb,boolean),splitjson.delete_field(regclass,bigint,text[]),
+    splitjson.increment_field(regclass,bigint,text[],numeric) TO splitjson_writer;
 GRANT SELECT ON docs TO splitjson_reader;
 GRANT SELECT,INSERT,UPDATE,DELETE ON docs TO splitjson_writer;
 SET ROLE splitjson_reader;

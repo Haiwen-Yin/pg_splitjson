@@ -1,8 +1,8 @@
-# PG SplitJSON 0.1.0 API 参考
+# PG SplitJSON 0.2.0 API 参考
 
 [English](api-reference.md) | **简体中文** · [文档目录](README.zh-CN.md)
 
-本文列出 **PostgreSQL Split JSON Storage Extension（PG SplitJSON）0.1.0** 的业务 API。安装 `pg_splitjson`，使用 `splitjson` schema。签名以[安装 SQL](../sql/pg_splitjson--0.1.0.sql)为依据。
+本文列出 **PostgreSQL Split JSON Storage Extension（PG SplitJSON）0.2.0** 的业务 API。安装 `pg_splitjson`，使用 `splitjson` schema。签名以[安装 SQL](../sql/pg_splitjson--0.2.0.sql)为依据。
 
 ## 通用约定
 
@@ -64,6 +64,29 @@ splitjson.create_path_index(
     p_table regclass, p_name text, p_path text[]
 ) RETURNS regclass
 
+splitjson.grant_access(
+    p_table regclass, p_role regrole, p_mode text
+) RETURNS void
+
+splitjson.check_table(
+    p_table regclass, p_check_data boolean DEFAULT false
+) RETURNS jsonb
+
+splitjson.check_all(
+    p_check_data boolean DEFAULT false
+) RETURNS SETOF jsonb
+
+splitjson.table_stats(p_table regclass) RETURNS jsonb
+splitjson.rename_table(p_table regclass, p_name text) RETURNS regclass
+splitjson.set_business_not_null(p_table regclass, p_column text,
+                                p_enabled boolean DEFAULT true) RETURNS void
+splitjson.set_business_default(p_table regclass, p_column text,
+                               p_value jsonb) RETURNS void
+splitjson.add_field_check(p_table regclass, p_name text, p_path jsonb,
+                          p_type text, p_required boolean DEFAULT false) RETURNS void
+splitjson.index_ddl(p_table regclass, p_name text, p_path jsonb,
+                    p_kind text DEFAULT 'jsonb', p_unique boolean DEFAULT false) RETURNS text
+
 splitjson.create_path_index(
     p_table regclass, p_name text, p_path text[], p_kind text
 ) RETURNS regclass
@@ -92,6 +115,10 @@ splitjson.create_path_index(
 ### drop_table
 
 事务内删除受管视图、内部表和映射，需要拥有视图或拥有视图所有者角色的相应权限。不使用 CASCADE，需先处理依赖对象。使用该 API，不直接删除或重命名受管对象。
+
+### 运维管理
+
+`grant_access` 向已有角色授予 `read` 或 `write` 模式下的业务视图和最小辅助/更新函数权限，不授予内部存储权限。`check_table` 校验一个映射，可选地还原全部行；`check_all` 校验所有受管映射。`table_stats` 返回内部表的 PostgreSQL 统计和关系大小。`rename_table` 在业务 schema 内修改受管视图名称。`set_business_not_null`、`set_business_default` 和 `add_field_check` 在受管存储上应用类型化业务约束。`index_ddl` 返回可审阅的 `CREATE INDEX [CONCURRENTLY]` SQL，应在事务外执行并检查 invalid index。
 
 ## 更新
 

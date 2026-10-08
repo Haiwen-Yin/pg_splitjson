@@ -1,53 +1,55 @@
-# PG SplitJSON 0.1.0 release note
+# PG SplitJSON 0.2.0 release note
 
 **English** | [简体中文](RELEASE_NOTE.zh-CN.md) · [README](README.md) · [API reference](docs/api-reference.md)
 
-**PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.1.0** is the initial source release for PostgreSQL 18, verified on PostgreSQL 18.6. It is licensed under [Apache License 2.0](LICENSE) (`Apache-2.0`).
+**PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.2.0** is the production-hardening release for PostgreSQL 18. It was verified on PostgreSQL 18.6 on Linux x86_64 and is licensed under [Apache License 2.0](LICENSE) (`Apache-2.0`).
 
-PG SplitJSON separates frequently updated JSON paths into ordinary columns and stores the remaining document in a versioned cold template. Applications access a business view containing `id`, complete JSONB `doc` and optional business columns. Dedicated APIs can update existing hot fields and object/array subtrees without reading or rewriting cold.
+PG SplitJSON separates declared frequently updated JSON paths into ordinary private columns and stores the remaining document in a versioned TOASTable cold template. A business view exposes `id`, complete JSONB `doc`, and optional typed business columns. Dedicated APIs can update existing hot paths without reading or assigning the cold template.
 
-## Main features
+## What is new in 0.2.0
 
-- Separate hot storage with missing-field and JSON null semantics. Documents without declared fields retain their original JSONB template payload.
-- Single-field replacement, ordered atomic batches, deletion and exact numeric increments under a row lock. All-hot batches produce one physical UPDATE; fallback operations repack and synchronize all slots.
-- Native array operations and fixed array hot paths. Declaration `["items",0,"price"]` uses an array index; `["items","0","price"]` uses an object key. Operation paths support negative indexes. Structural shifts outside a hot subtree repack the document.
-- Automatic exact constant-path SELECT rewriting, direct field reads, equality ID searches and JSONB/text B-tree indexes. Original view permissions and security barriers are preserved.
-- Up to 64 hot paths with 64 segments per path, plus up to 64 typed business columns. Snapshot migration from ordinary bigint/JSONB tables preserves the source.
-- Cold format v2 writes with v1/v2 reads, MVCC consistency, stale ordinary view DML detection, whole-database dump/restore and paired English/Chinese documentation.
+- A real 0.1.0 to 0.2.0 extension upgrade with preflight rejection of unknown historical builds. Existing cold v1/v2 values, hot indexes, data and view privileges remain usable.
+- Least-privilege defaults: internal and management functions are not PUBLIC-executable; `splitjson.grant_access` grants a chosen role only the view and read/write APIs it needs.
+- Mapping drift checks, database-level DDL protection, controlled rename/drop, business-column defaults and constraints, table statistics, index DDL review, and `check_table`/`check_all` consistency checks.
+- Validated cold binary send/receive, planner-registration checks, stack/interruption bounds, and portable text-backed binary COPY round trips.
+- Reproducible installcheck, randomized differential, upgrade, permissions/DDL, concurrency, TOAST, dump/restore, crash recovery, PITR, streaming standby and promotion tests.
+- A bounded production-style workload harness and CI jobs for a normal PG18 build, cassert build and sanitizer compile.
 
-## Installation and planner loading
+## Compatibility and operating contract
 
-Requires PostgreSQL 18 server headers, PGXS, a C compiler, make and PL/pgSQL. Build and install into the selected PG18 installation:
+- The tested support target is PostgreSQL 18.6 on Linux x86_64. Physical backup, streaming replication and PITR require the same PostgreSQL minor/ABI and the installed `pg_splitjson` library and SQL files. Move between PostgreSQL major versions with logical export/import or `splitjson.migrate_table`.
+- The fast-update contract applies to dedicated `set_field`, `set_fields`, `delete_field` and `increment_field` calls that hit existing hot paths. Ordinary changed-document view DML restores and repacks the document; it synchronizes hot columns but is not a fast-path guarantee.
+- The implementation preserves MVCC, WAL, row locks and PostgreSQL TOAST. A changed indexed hot column can prevent HOT; unchanged large cold values can still reuse their external TOAST pointer.
+- RLS, partitioned managed views/tables, view `ON CONFLICT`, automatic logical-replication reassembly, and fully transparent ORM updates are outside this release. General Oracle-style duality views are outside project scope.
+- Migration is a snapshot copy into a new managed relation. It does not copy source defaults, constraints, indexes, triggers, permissions, collations or later writes. Arrange a cutover and compare the result before granting application access.
+- A `pg_restore` into a new database must use the documented installer-controlled `session_replication_role=replica` restore flow, then run `splitjson.check_all(true)`. Do not overwrite a loaded shared library during an in-place upgrade.
+
+## Installation and upgrade
+
+Build against the selected PG18 `pg_config`:
 
 ```sh
 make PG_CONFIG=/path/to/pg18/bin/pg_config
 make PG_CONFIG=/path/to/pg18/bin/pg_config install
 ```
 
-In the selected database, run as the extension installer:
+For a new database, run `CREATE EXTENSION pg_splitjson;`. For an official 0.1.0 installation, install the 0.2.0 library and SQL files, reconnect sessions, and run:
 
 ```sql
-CREATE EXTENSION pg_splitjson;
-LOAD 'pg_splitjson';
-SHOW splitjson.enable_query_rewrite;
+ALTER EXTENSION pg_splitjson UPDATE TO '0.2.0';
+SELECT splitjson.check_all(true);
 ```
 
-Automatic rewriting requires the module to be loaded before planning. Administrators can configure `session_preload_libraries = 'pg_splitjson'` for application sessions. `splitjson.enable_query_rewrite` defaults to on after module load; changing it invalidates cached plans.
+The upgrade is transactional and refuses an unrecognized historical 0.1.0 catalog. Use logical migration for earlier prototypes or altered layouts.
 
-The installation identifier is `pg_splitjson`, the public API schema is `splitjson`, and the private storage schema is `splitjson_storage`. See [README](README.md) for examples and application grants.
+## Validation evidence
 
-## Compatibility and limitations
+The complete isolated PG18.6 run passed installcheck, upgrade, 5000 seeded JSONB differential operations, permission and DDL checks, concurrent increments, physical cold TOAST pointer/chunk reuse, dump/restore, immediate crash recovery, named-restore-point PITR, streaming replay and standby promotion. The raw evidence is under [docs/validation/pg-splitjson-0.2.0/](docs/validation/pg-splitjson-0.2.0/); the report explains the limits of each measurement.
 
-- This release adds an internal storage envelope and managed views. PostgreSQL still creates heap row versions; complete-document reads require reconstruction. Ordinary changed-document UPDATE repacks and does not automatically become a fast update.
-- Dynamic query paths, ambiguous numeric `#>`/`#>>` segments, final `->0`/`->>0` scalar extraction and whole view-row references retain native expressions/plans. Optimization covers supported SELECT forms, with matching indexes chosen by PostgreSQL cost estimates.
-- Fixed array slots identify positions, not business identities. Array wildcards and dynamic hot layouts are unsupported. Updating a whole hot array still rewrites that array, and fields in the same row share a row lock.
-- View `ON CONFLICT`, RLS, partitioning, automatic logical replication reassembly and full ORM transparency are not provided. Use whole-database backup or logical export; a view-only dump omits storage dependencies.
-- Migration copies data and types, not defaults, constraints, permissions, collations or later source writes. Earlier unpublished `pgjson` and 0.1.0 builds require a fresh installation and logical migration; no same-version online library overwrite is supported. Reading cold v1 does not imply an in-place extension upgrade.
+In the bounded four-client, eight-second workload, the split hot update arm produced 9,147,136 WAL bytes versus 68,009,496 for the native JSONB arm; split hot updates reached 1,019.998 versus 350.398 reported TPS for that run. These values are workload-specific evidence, not a throughput or SLA promise. Cold reads and structural updates can favor native JSONB, and concurrent writers still contend on the same row.
 
-Detailed contracts: [API reference](docs/api-reference.md), [array and query guide](docs/roadmap.md), [storage format](docs/storage-format.md).
+## Source archive
 
-## Validation and distribution
+The reproducible source archive is `build_output/0.2.0/pg_splitjson-0.2.0.zip` with the external checksum `build_output/0.2.0/pg_splitjson-0.2.0.zip.sha256`. It contains the source, installation/upgrade SQL, tests and paired public documentation. It excludes Git metadata, local labs, database files, dumps, compiled objects, OpenSpec history, agent instructions and article working material.
 
-The PG18.6 suite passed semantic, concurrency, permission, real index-plan and whole-database dump/restore checks. It includes 338 native JSONB array differential cases and verifies that indexed fixed-array updates and hot-array subtree operations preserve the cold 18-byte external TOAST pointer and chunks. These results validate the tested behavior; production performance depends on the workload.
-
-The source ZIP is `pg_splitjson-0.1.0.zip`, with an external `.zip.sha256` checksum file. Artifacts are stored under `build_output/0.1.0/`. The ZIP contains project source, installation files, license, public documentation and tests. Local build outputs, experiment reports/logs, Git metadata, agent guidance and development archives are excluded.
+See the [API reference](docs/api-reference.md), [production runbook](docs/production-runbook.md), [support matrix](docs/support-matrix.md) and [0.2.0 validation report](docs/validation.md) before deployment.

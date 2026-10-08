@@ -1,8 +1,8 @@
-# 0.1.0 数组与自动查询改写
+# 0.2.0 数组与自动查询改写
 
 [English](roadmap.md) | **简体中文** · [文档目录](README.zh-CN.md)
 
-**PG SplitJSON 0.1.0 已实现数组操作、固定数组热槽和精确路径 SELECT 自动改写。** 本文替代之前的实施计划。通用 duality view 不属于项目范围。
+**PG SplitJSON 0.2.0 已实现数组操作、固定数组热槽和精确路径 SELECT 自动改写。** 本文替代之前的实施计划。通用 duality view 不属于项目范围。
 
 ## 选择数组更新单元
 
@@ -81,8 +81,8 @@ get_field 与 find_ids 不依赖 planner hook。数字搜索路径在 typed 候�
 
 ## 验证与后续
 
-验证报告覆盖 338 组原生数组对照、固定位置位移、标量与混合形状回退、批量单写、并发增量、真实计划、generic PREPARE、GUC/索引失效、外连接、仅视图权限、cold 指针/分块复用和备份恢复。测试见 [arrays_rewrite.sql](../tests/arrays_rewrite.sql)、[physical.sql](../tests/physical.sql)、[concurrency.sh](../tests/concurrency.sh)及 [restore.sql](../tests/restore.sql)。
+[验证报告](validation.zh-CN.md)覆盖 338 组原生数组对照、固定位置位移、标量与混合形状回退、批量单写、并发增量、真实计划、generic PREPARE、GUC/索引失效、外连接、仅视图权限、cold 指针/分块复用和备份恢复。测试见 [arrays_rewrite.sql](../tests/arrays_rewrite.sql)、[physical.sql](../tests/physical.sql)、[concurrency.sh](../tests/concurrency.sh)及 [restore.sql](../tests/restore.sql)。
 
-更早未发布构建也使用 0.1.0。迁移应使用新安装及逻辑导出/导入，不覆盖已加载的库，不假设同版本在线升级。当前行为由 OpenSpec 规定。
+更早未发布构建也沿用 0.1.0 版本号。迁移应使用新安装及逻辑导出/导入；正式 0.1.0 到 0.2.0 脚本只接受规范目录。不覆盖已加载的库，也不要为改动布局假设可升级。当前行为由 [OpenSpec](../openspec/specs/) 规定。
 
-后续可另立 proposal 评估动态布局、数组通配、更广的可证明索引下推和约束/默认值；通用 duality view 排除在外。
+0.2.0 增加生产生命周期与运维管理能力，见 [API 参考](api-reference.zh-CN.md)和[生产运行手册](production-runbook.zh-CN.md)。通用 duality view 不在项目范围。

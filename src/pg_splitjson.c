@@ -6,6 +6,10 @@
 #include "postgres.h"
 #include "fmgr.h"
 #include "catalog/pg_type_d.h"
+#include "commands/event_trigger.h"
+#include "executor/spi.h"
+#include "libpq/pqformat.h"
+#include "miscadmin.h"
 #include "parser/parse_type.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -17,7 +21,7 @@
 #include <limits.h>
 
 #if PG_VERSION_NUM < 180000 || PG_VERSION_NUM >= 190000
-#error "pg_splitjson 0.1.0 requires PostgreSQL 18"
+#error "pg_splitjson requires PostgreSQL 18"
 #endif
 
 PG_MODULE_MAGIC;
@@ -65,6 +69,9 @@ PG_FUNCTION_INFO_V1(pg_splitjson_object_field);
 PG_FUNCTION_INFO_V1(pg_splitjson_column_type);
 PG_FUNCTION_INFO_V1(pg_splitjson_hot_route);
 PG_FUNCTION_INFO_V1(pg_splitjson_path_candidates);
+PG_FUNCTION_INFO_V1(pg_splitjson_ddl_start_guard);
+PG_FUNCTION_INFO_V1(pg_splitjson_cold_send);
+PG_FUNCTION_INFO_V1(pg_splitjson_cold_recv);
 
 static void
 invalid_path(const char *message)
@@ -92,6 +99,7 @@ parse_paths(Jsonb *json, bool allow_indexes)
         Path *path = &paths.items[i];
         Datum *keys;
 
+        CHECK_FOR_INTERRUPTS();
         if (value->type != jbvBinary ||
             !JsonContainerIsArray(value->val.binary.data) ||
             JsonContainerIsScalar(value->val.binary.data))
@@ -329,6 +337,7 @@ pg_splitjson_pack(PG_FUNCTION_ARGS)
     {
         JsonbValue value;
 
+        CHECK_FOR_INTERRUPTS();
         if (lookup_object_path(doc, &paths.items[i], &value) != NULL)
             template = DatumGetJsonbP(DirectFunctionCall4(jsonb_set, JsonbPGetDatum(template),
                                                        PointerGetDatum(paths.items[i].sqlpath),
@@ -354,6 +363,7 @@ pg_splitjson_slots(PG_FUNCTION_ARGS)
     {
         JsonbValue value;
 
+        CHECK_FOR_INTERRUPTS();
         if (lookup_object_path(doc, &paths.items[i], &value) == NULL)
             nulls[i] = true;
         else
@@ -392,6 +402,7 @@ pg_splitjson_restore(PG_FUNCTION_ARGS)
         JsonbValue value;
         JsonbValue *found = lookup_object_path(template, &paths.items[i], &value);
 
+        CHECK_FOR_INTERRUPTS();
         if ((found == NULL) != nulls[i] || (found != NULL && found->type != jbvNull))
             ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
                             errmsg("cold placeholder and hot value presence disagree")));
@@ -599,4 +610,91 @@ pg_splitjson_path_candidates(PG_FUNCTION_ARGS)
         if (paths.items[i].depth == depth && operation_prefix(&paths.items[i], keys, depth))
             slots[count++] = Int32GetDatum(i + 1);
     PG_RETURN_ARRAYTYPE_P(construct_array(slots, count, INT4OID, 4, true, TYPALIGN_INT));
+}
+
+/* Protect extension/configuration schemas before their own event triggers can
+ * be removed. All checks target this extension; unrelated DROP is unaffected. */
+Datum
+pg_splitjson_ddl_start_guard(PG_FUNCTION_ARGS)
+{
+    EventTriggerData *event;
+    DropStmt *drop;
+    bool protected = false;
+    ListCell *lc;
+
+    if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
+        ereport(ERROR, (errcode(ERRCODE_E_R_I_E_EVENT_TRIGGER_PROTOCOL_VIOLATED),
+                        errmsg("must be called as an event trigger")));
+    event = (EventTriggerData *) fcinfo->context;
+    if (!IsA(event->parsetree, DropStmt))
+        PG_RETURN_NULL();
+    drop = (DropStmt *) event->parsetree;
+    if (drop->removeType != OBJECT_EXTENSION && drop->removeType != OBJECT_SCHEMA)
+        PG_RETURN_NULL();
+    foreach(lc, drop->objects)
+    {
+        Node *object = lfirst(lc);
+        const char *name;
+
+        if (IsA(object, String))
+            name = strVal(object);
+        else if (IsA(object, List) && list_length((List *) object) == 1 &&
+                 IsA(linitial((List *) object), String))
+            name = strVal(linitial((List *) object));
+        else
+            continue;
+        if ((drop->removeType == OBJECT_EXTENSION && strcmp(name, "pg_splitjson") == 0) ||
+            (drop->removeType == OBJECT_SCHEMA &&
+             (strcmp(name, "splitjson") == 0 || strcmp(name, "splitjson_storage") == 0)))
+            protected = true;
+    }
+    if (protected)
+    {
+        bool exists;
+
+        if (SPI_connect() != SPI_OK_CONNECT)
+            elog(ERROR, "SPI_connect failed");
+        if (SPI_execute("SELECT 1 FROM splitjson._tables LIMIT 1", true, 1) != SPI_OK_SELECT)
+            elog(ERROR, "managed relation check failed");
+        exists = SPI_processed > 0;
+        SPI_finish();
+        if (exists)
+            ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                            errmsg("remove managed relations with splitjson.drop_table before dropping the extension or its schemas")));
+    }
+    PG_RETURN_NULL();
+}
+
+/* Portable wire format: one protocol byte followed by validated text envelope.
+ * No PostgreSQL JSONB physical bytes are accepted from a client. */
+Datum
+pg_splitjson_cold_send(PG_FUNCTION_ARGS)
+{
+    StringInfoData buffer;
+    char *wire = DatumGetCString(DirectFunctionCall1(pg_splitjson_cold_out, PG_GETARG_DATUM(0)));
+
+    pq_begintypsend(&buffer);
+    pq_sendbyte(&buffer, 1);
+    pq_sendtext(&buffer, wire, strlen(wire));
+    PG_RETURN_BYTEA_P(pq_endtypsend(&buffer));
+}
+
+Datum
+pg_splitjson_cold_recv(PG_FUNCTION_ARGS)
+{
+    StringInfo buffer = (StringInfo) PG_GETARG_POINTER(0);
+    int remaining;
+    int converted;
+    char *wire;
+
+    if (pq_getmsgbyte(buffer) != 1)
+        ereport(ERROR, (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                        errmsg("unsupported cold wire version")));
+    remaining = buffer->len - buffer->cursor;
+    wire = pq_getmsgtext(buffer, remaining, &converted);
+    if ((int) strlen(wire) != converted)
+        ereport(ERROR, (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                        errmsg("cold wire text must not contain zero bytes")));
+    pq_getmsgend(buffer);
+    PG_RETURN_DATUM(DirectFunctionCall1(pg_splitjson_cold_in, CStringGetDatum(wire)));
 }

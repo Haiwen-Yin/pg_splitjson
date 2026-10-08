@@ -1,0 +1,2 @@
+# Preserve original psql alignment and blank lines in validation evidence.
+docs/validation/**/*.log -whitespace

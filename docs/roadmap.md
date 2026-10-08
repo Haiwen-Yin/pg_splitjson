@@ -1,8 +1,8 @@
-# Arrays and automatic query rewriting in 0.1.0
+# Arrays and automatic query rewriting in 0.2.0
 
 **English** | [简体中文](roadmap.zh-CN.md) · [Documentation](README.md)
 
-**PG SplitJSON 0.1.0 implements array operations, fixed array hot slots and automatic exact-path SELECT rewriting.** This page replaces the earlier implementation plan. General duality views are outside the project's scope.
+**PG SplitJSON 0.2.0 implements array operations, fixed array hot slots and automatic exact-path SELECT rewriting.** This page replaces the earlier implementation plan. General duality views are outside the project's scope.
 
 ## Choose the array update unit
 
@@ -81,8 +81,8 @@ A small table can legitimately use a sequential scan. The selective 10,000-row t
 
 ## Verification and remaining work
 
-Validation covers 338 native array differential cases, fixed-position shifts, scalar and mixed-shape fallbacks, one-write batches, concurrent increments, real plans, generic PREPARE, GUC/index invalidation, outer joins, view-only permissions, cold pointer/chunk reuse and dump/restore. Tests are in [arrays_rewrite.sql](../tests/arrays_rewrite.sql), [physical.sql](../tests/physical.sql), [concurrency.sh](../tests/concurrency.sh) and [restore.sql](../tests/restore.sql).
+[Validation](validation.md) covers 338 native array differential cases, fixed-position shifts, scalar and mixed-shape fallbacks, one-write batches, concurrent increments, real plans, generic PREPARE, GUC/index invalidation, outer joins, view-only permissions, cold pointer/chunk reuse and dump/restore. Tests are in [arrays_rewrite.sql](../tests/arrays_rewrite.sql), [physical.sql](../tests/physical.sql), [concurrency.sh](../tests/concurrency.sh) and [restore.sql](../tests/restore.sql).
 
-Earlier unpublished builds also used extension version 0.1.0. Use a fresh installation and logical export/import for migration; do not overwrite a loaded library or assume a same-version online upgrade. Current behavior is specified in OpenSpec.
+Earlier unpublished builds also used the 0.1.0 version number. Use a fresh installation and logical export/import for migration; the official 0.1.0 to 0.2.0 script accepts only the formal catalog shape. Do not overwrite a loaded library or assume an upgrade for altered layouts. Current behavior is specified in [OpenSpec](../openspec/specs/).
 
-Future proposals may cover dynamic layouts, array wildcards, broader proven index pushdown and constraints/defaults. General duality views are excluded.
+Version 0.2.0 adds the production lifecycle and management functions documented in the [API reference](api-reference.md) and [production runbook](production-runbook.md). General duality views are excluded.

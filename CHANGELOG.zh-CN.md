@@ -2,7 +2,17 @@
 
 [English](CHANGELOG.md) | **简体中文** · [文档目录](docs/README.zh-CN.md)
 
-## 0.1.0
+## 0.2.0
+
+面向 PostgreSQL 18 的生产硬化版本。
+
+- 正式 0.1.0 目录的事务升级，并在升级前拒绝未知历史布局。
+- 最小权限 API 授权、映射漂移检查、受保护的受管 DDL、受控重命名/删除、业务默认值/检查、统计和索引维护辅助函数。
+- 可移植 cold 二进制 I/O、规划器注册校验和受边界保护的 C 代码。
+- 崩溃恢复、PITR、流复制回放/提升、备份恢复、随机差分及持续负载维护证据。
+- 普通 PG18、cassert 和 sanitizer 构建 CI，以及干净版本源码包生成器。
+
+## 0.2.0
 
 首个未发布版本的完整名称为 PostgreSQL Split JSON Storage Extension，安装标识 pg_splitjson，API schema splitjson。
 

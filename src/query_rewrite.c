@@ -5,7 +5,10 @@
 /* PG18 planner integration. Only canonical, unfiltered managed view projections
  * are rewritten. Original view/storage permission records and barriers survive. */
 #include "postgres.h"
+#include "miscadmin.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_extension.h"
+#include "executor/spi.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
 #include "catalog/pg_type.h"
@@ -30,6 +33,7 @@ PGDLLEXPORT void _PG_fini(void);
 
 static planner_hook_type previous_planner = NULL;
 static bool rewrite_enabled = true;
+static bool checking_registration = false;
 
 /* A native #> segment may address either a key or an index. -> fixes the kind. */
 typedef struct Step
@@ -72,6 +76,64 @@ typedef struct WholeRowContext
 } WholeRowContext;
 
 static Query *rewrite_query(Query *query, Oid restore_oid);
+
+/* Query only the installer-owned registry, with a recursion guard and complete
+ * restoration of the caller's security context on both success and error.
+ * Registration is checked at planning time; no backend-lifetime slot cache. */
+static bool
+registered_projection(Oid view, Oid storage, Jsonb *paths)
+{
+    Oid extension = get_extension_oid("pg_splitjson", true);
+    HeapTuple tuple;
+    Oid owner;
+    Oid saved_user;
+    int saved_context;
+    bool result = false;
+    bool saved_check = checking_registration;
+    Oid types[3] = {TEXTOID, TEXTOID, JSONBOID};
+    Datum values[3];
+
+    if (!OidIsValid(extension))
+        return false;
+    tuple = SearchSysCache1(EXTENSIONOID, ObjectIdGetDatum(extension));
+    if (!HeapTupleIsValid(tuple))
+        return false;
+    owner = ((Form_pg_extension) GETSTRUCT(tuple))->extowner;
+    ReleaseSysCache(tuple);
+    values[0] = CStringGetTextDatum(quote_qualified_identifier(
+                    get_namespace_name(get_rel_namespace(view)), get_rel_name(view)));
+    values[1] = CStringGetTextDatum(quote_qualified_identifier(
+                    get_namespace_name(get_rel_namespace(storage)), get_rel_name(storage)));
+    values[2] = JsonbPGetDatum(paths);
+    GetUserIdAndSecContext(&saved_user, &saved_context);
+    PG_TRY();
+    {
+        bool isnull;
+        Datum exists;
+
+        checking_registration = true;
+        SetUserIdAndSecContext(owner, saved_context | SECURITY_LOCAL_USERID_CHANGE);
+        if (SPI_connect() != SPI_OK_CONNECT)
+            elog(ERROR, "SPI_connect failed");
+        if (SPI_execute_with_args("SELECT EXISTS (SELECT 1 FROM splitjson._tables "
+                                  "WHERE view_name=$1 AND storage_name=$2 AND paths=$3)",
+                                  3, types, values, NULL, true, 1) != SPI_OK_SELECT)
+            elog(ERROR, "managed view registration check failed");
+        exists = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+        result = !isnull && DatumGetBool(exists);
+        SPI_finish();
+        SetUserIdAndSecContext(saved_user, saved_context);
+        checking_registration = saved_check;
+    }
+    PG_CATCH();
+    {
+        SetUserIdAndSecContext(saved_user, saved_context);
+        checking_registration = saved_check;
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+    return result;
+}
 
 /* Appending internal outputs changes the subquery tuple descriptor. Keep whole
  * view-row references native, including correlated references in child queries. */
@@ -121,6 +183,8 @@ extract_path(Node *node, Extraction *out)
     Node *argument;
     Const *constant;
     bool text_result = false;
+
+    check_stack_depth();
 
     if (IsA(node, Var))
     {
@@ -348,6 +412,8 @@ inspect_view(RangeTblEntry *rte, Index varno, Oid restore_oid)
     if (!JB_ROOT_IS_ARRAY(DatumGetJsonbP(paths->constvalue)) ||
         JB_ROOT_COUNT(DatumGetJsonbP(paths->constvalue)) != list_length(hot->elements))
         return NULL;
+    if (!registered_projection(rte->relid,storage->relid,DatumGetJsonbP(paths->constvalue)))
+        return NULL;
     managed = palloc0(sizeof(Managed));
     managed->query = query;
     managed->rte = rte;
@@ -516,6 +582,8 @@ rewrite_query(Query *query, Oid restore_oid)
     ListCell *lc;
     Index varno = 0;
 
+    check_stack_depth();
+
     if (query->commandType != CMD_SELECT)
         return query;
     context.query = query;
@@ -544,7 +612,7 @@ rewrite_query(Query *query, Oid restore_oid)
 static PlannedStmt *
 splitjson_planner(Query *parse, const char *query_string, int cursor_options, ParamListInfo parameters)
 {
-    if (rewrite_enabled && OidIsValid(get_extension_oid("pg_splitjson", true)) &&
+    if (!checking_registration && rewrite_enabled && OidIsValid(get_extension_oid("pg_splitjson", true)) &&
         OidIsValid(get_namespace_oid("splitjson", true)))
     {
         Oid types[3];

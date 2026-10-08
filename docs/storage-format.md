@@ -2,7 +2,7 @@
 
 **English** | [简体中文](storage-format.zh-CN.md) · [Documentation](README.md)
 
-Extension version: **0.1.0**. New writes use internal `cold` format version **2**; versions **1 and 2** are readable. These are independently numbered.
+Extension version: **0.2.0**. New writes use internal `cold` format version **2**; versions **1 and 2** are readable. These are independently numbered.
 
 `splitjson.cold` is a PostgreSQL varlena type that supports external TOAST storage. It targets PG18; direct physical-file reuse across major versions is not guaranteed. Use text I/O and pg_dump to migrate between environments.
 
@@ -38,10 +38,10 @@ The text representation is:
 {"version":2,"paths":[["user","status"],["counter"]],"template":{"user":{"status":null},"counter":null,"body":"cold"}}
 ```
 
-Input validates the version, paths and placeholders; output supports text round trips. This describes a cold template, not a complete business JSON document. Restore the complete value with `splitjson.restore(cold,jsonb[])`. Version 0.1.0 has no binary send/receive functions. Do not treat the internal format as jsonb or modify it manually.
+Input validates the version, paths and placeholders; output supports text round trips. The 0.2.0 type also provides a validated text-backed binary send/receive format for COPY and client protocols; it never accepts raw PostgreSQL JSONB physical bytes from a client. This describes a cold template, not a complete business JSON document. Restore the complete value with `splitjson.restore(cold,jsonb[])`. Do not treat the internal format as jsonb or modify it manually.
 
 Version 2 extends path interpretation: strings remain object keys, while nonnegative integral int32 numbers address real array containers. For `[["items",0,"price"]]` and `{"items":[{"price":10},{"price":20}]}`, the template is `{"items":[{"price":null},{"price":20}]}` and hot_1 is `10`. Numeric string `"0"` still means an object key. Version 1 accepts strings only and preserves its original object-only interpretation; text output retains the stored version rather than silently upgrading it.
 
-Generated views use `restore(cold,hot[],constant_paths)`, which checks that the visible mapping matches the cold paths. New pack writes version 2 even for object-only declarations. Earlier unpublished extension builds also used 0.1.0: readability of v1 does not constitute a same-version online extension upgrade. Use a fresh installation and logical migration.
+Generated views use `restore(cold,hot[],constant_paths)`, which checks that the visible mapping matches the cold paths. New pack writes version 2 even for object-only declarations. Earlier unpublished extension builds also used the 0.1.0 version number: readability of v1 does not constitute an upgrade. The official 0.1.0 to 0.2.0 script accepts only the formal catalog shape; use a fresh installation and logical migration for prototypes or altered layouts.
 
 Updates use the ordinary heap: cold and hot_N belong to the same row and commit atomically in the same transaction. Existing hot field/subtree updates assign only hot_N; PostgreSQL TOAST reuses the unchanged cold external pointer. MVCC, WAL and recovery mechanisms remain in effect.

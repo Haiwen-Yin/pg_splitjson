@@ -1,5 +1,5 @@
 \set ON_ERROR_STOP on
-SELECT assert_true((SELECT extversion='0.1.0' FROM pg_extension WHERE extname='pg_splitjson'),'official extension identity 0.1.0');
+SELECT assert_true((SELECT extversion='0.2.0' FROM pg_extension WHERE extname='pg_splitjson'),'official extension identity 0.2.0');
 SELECT assert_true((SELECT obj_description(oid,'pg_extension')='PostgreSQL Split JSON Storage Extension' FROM pg_extension WHERE extname='pg_splitjson'),'full English name');
 
 SELECT splitjson.create_table('public.batch_docs','[["x"],["y"],["obj"]]');

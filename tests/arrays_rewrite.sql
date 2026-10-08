@@ -1,5 +1,5 @@
 \set ON_ERROR_STOP on
-SELECT assert_true((SELECT extversion='0.1.0' FROM pg_extension WHERE extname='pg_splitjson'),'version stays 0.1.0');
+SELECT assert_true((SELECT extversion='0.2.0' FROM pg_extension WHERE extname='pg_splitjson'),'release version 0.2.0');
 SELECT assert_true(splitjson.restore('{"version":1,"paths":[["x"]],"template":{"x":null}}'::splitjson.cold,ARRAY['5'::jsonb])='{"x":5}','legacy cold v1 read');
 SELECT assert_true(splitjson.pack('{"x":1}','[["x"]]')::text::jsonb->'version'='2','new cold format v2');
 SELECT assert_true(splitjson.pack('{"a":[{"v":1},null]}','[["a",0,"v"]]')::text::splitjson.cold::text=splitjson.pack('{"a":[{"v":1},null]}','[["a",0,"v"]]')::text,'cold v2 typed round trip');
