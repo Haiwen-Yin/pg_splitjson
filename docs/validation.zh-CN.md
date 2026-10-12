@@ -1,8 +1,8 @@
-# PG SplitJSON 0.2.0 验证报告
+# PG SplitJSON 0.3.0 验证报告
 
 [English](validation.md) | **简体中文** · [文档目录](README.zh-CN.md)
 
-生产硬化测试已在 10.10.10.131 的全新独立实验中通过，环境为 **PostgreSQL 18.6**、Linux x86_64。实验从 `/usr/local/pgsql-18.6` 复制到唯一 `/tmp/pg_splitjson-lab.*` 前缀，使用私有 socket、`listen_addresses=''` 和全新 PGDATA；没有连接或修改任何现有 PostgreSQL 实例。原始日志位于 [validation/pg-splitjson-0.2.0/](validation/pg-splitjson-0.2.0/)。
+生产硬化测试已在 10.10.10.131 的全新独立实验中通过，环境为 **PostgreSQL 18.6**、Linux x86_64。实验从 `/usr/local/pgsql-18.6` 复制到唯一 `/tmp/pg_splitjson-lab.*` 前缀，使用私有 socket、`listen_addresses=''` 和全新 PGDATA；没有连接或修改任何现有 PostgreSQL 实例。原始日志位于 [validation/pg-splitjson-0.3.0/](validation/pg-splitjson-0.3.0/)。
 
 ## 发布与正确性
 
@@ -10,7 +10,7 @@
 | --- | --- |
 | 构建 | PGXS 编译和安装无警告完成 |
 | 回归 | `make installcheck`：1/1 production 测试通过 |
-| 升级 | 正式 0.1.0 到 0.2.0 通过；cold 指针/分块保留 |
+| 升级 | 正式 0.1.0 到 0.3.0 通过；cold 指针/分块保留 |
 | 差分 | 5000 组有种子 JSONB 操作通过 |
 | 数组 | 原生 set/delete、固定槽和结构重新拆分通过 |
 | 并发 | 对象、固定数组和子树增量无丢失完成 |
@@ -22,7 +22,7 @@
 
 ## 恢复
 
-同一独立集群通过了立即崩溃恢复、命名恢复点 PITR、流复制备库回放和提升。已提交热/冷值及业务行保留；崩溃时未提交行消失；PITR 在目标点之前停止；提升后的备库接受热字段更新。证据见 [recovery.log](validation/pg-splitjson-0.2.0/recovery.log)。
+同一独立集群通过了立即崩溃恢复、命名恢复点 PITR、流复制备库回放和提升。已提交热/冷值及业务行保留；崩溃时未提交行消失；PITR 在目标点之前停止；提升后的备库接受热字段更新。证据见 [recovery.log](validation/pg-splitjson-0.3.0/recovery.log)。
 
 物理恢复只支持相同 PostgreSQL minor/ABI 和扩展文件。跨 PostgreSQL 大版本使用逻辑导出/导入。每次恢复或提升后，恢复流量前执行 `splitjson.check_all(true)`。
 
@@ -49,6 +49,6 @@
 
 ## 限制与复现
 
-只有专用 API 提供快速路径契约。普通文档 DML 会重新拆分；同一行写入仍串行；热索引列变化可能阻止 HOT。不支持 RLS、分区受管关系、视图 `ON CONFLICT`、自动逻辑复制重组和通用 duality view。详见[支持矩阵](support-matrix.zh-CN.md)和[生产运行手册](production-runbook.zh-CN.md)。
+只有专用 API 提供快速路径契约。普通文档 DML 会重新拆分；同一行写入仍串行；热索引列变化可能阻止 HOT。不支持 原生视图 `ON CONFLICT`、跨布局逻辑复制重组和通用 duality view。详见[支持矩阵](support-matrix.zh-CN.md)和[生产运行手册](production-runbook.zh-CN.md)。
 
 使用 `./scripts/test-remote.sh root@10.10.10.131 /usr/local/pgsql-18.6` 复现。脚本复制工具链，只停止自身临时集群。

@@ -2,6 +2,15 @@
 
 **English** | [简体中文](CHANGELOG.zh-CN.md) · [Documentation](docs/README.md)
 
+## 0.3.0
+
+Production extension release for PostgreSQL 18.6.
+
+- Row revision epochs/tokens, conditional writes, native id partition helpers, typed ranges, upsert, RFC Patch/Merge Patch profiles and snapshot portability APIs.
+- Controlled native storage RLS lifecycle and same-layout replication manifests, with isolated caller/ACL and exported-snapshot/WAL technical gates.
+- Optional PG18 logical decoder with explicit unchanged-TOAST, SQL NULL and JSON null states.
+- Full 0.2.0 regression/recovery suite remains passing; release evidence is under `docs/validation/pg-splitjson-0.3.0/`.
+
 ## 0.2.0
 
 Production-hardening release for PostgreSQL 18.

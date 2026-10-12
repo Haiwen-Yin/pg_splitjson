@@ -15,7 +15,7 @@ CREATE FUNCTION public.fails(q text,s text) RETURNS void LANGUAGE plpgsql AS $$B
     RAISE EXCEPTION 'expected error %',s;
 END$$;
 DO $$ BEGIN
-    PERFORM ok((SELECT extversion='0.2.0' FROM pg_extension WHERE extname='pg_splitjson'));
+    PERFORM ok((SELECT extversion='0.3.0' FROM pg_extension WHERE extname='pg_splitjson'));
     PERFORM splitjson.create_table('public.prod_docs','[["n"],["state"],["items",0,"n"]]',
                                   '{"tenant":"bigint","label":"varchar(12)"}');
 END$$;

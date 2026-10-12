@@ -1,45 +1,37 @@
-# PG SplitJSON 0.2.0 production runbook
+# PG SplitJSON 0.3.0 production runbook
 
 **English** | [简体中文](production-runbook.zh-CN.md) · [Documentation](README.md)
 
-This runbook is for PostgreSQL 18.6 and the `pg_splitjson` 0.2.0 release. Perform installation, upgrade, backup and restore work as the database/extension installer. Use a maintenance window for extension library changes and reconnect sessions after replacing files.
+This runbook targets PostgreSQL 18.6 on Linux x86_64 and `pg_splitjson` 0.3.0. The extension is Apache 2.0 licensed, installed as `pg_splitjson`, and exposes SQL in `splitjson`. Installation, upgrade, layout migration, replication and recovery are installer operations. Keep the extension library and SQL at the exact same version on every process that can access the database.
 
-## Preflight
+## Preflight and installation
 
-1. Confirm `SELECT version()` is PostgreSQL 18 and record the server ABI, OS, architecture, extension library path and `pg_config --version`.
-2. Install the same `pg_splitjson` library and SQL files on every physical replica. Keep the PostgreSQL minor version and ABI identical across primary, standby, backup and restore targets.
-3. Review declared paths, hot update ratios, cold payload size, indexes and same-row concurrency. Create a new managed relation for a changed layout.
-4. Verify application roles have only the required business schema/view privileges. Do not grant `splitjson_storage` or `splitjson._tables` access.
-5. Take a whole-database backup and test the restore procedure in an isolated PG18 cluster.
+1. Confirm `SELECT version()` is PostgreSQL 18.6 and record `pg_config --version`, ABI, OS, architecture and the extension library path.
+2. Install the same 0.3.0 library and SQL files on the primary, physical standbys, logical subscribers and restore targets. Restart sessions that loaded an older shared library.
+3. Load `pg_splitjson` before planning sessions that use automatic query rewriting (`session_preload_libraries` or `LOAD`); other APIs work through the normal extension SQL entry points.
+4. Create managed relations and path indexes as the extension installer. Grant only the required business view/API privileges with `splitjson.grant_access`; never grant `splitjson_storage`, `splitjson._tables` or private functions.
+5. Run `SELECT splitjson.check_all(true);`, inspect `splitjson.table_stats()`, and establish a baseline for WAL, locks, vacuum and bloat.
 
-## New installation
+## Security and RLS
 
-Build and install with the selected PG18 `pg_config`, then run `CREATE EXTENSION pg_splitjson;` in each application database. Configure `session_preload_libraries = 'pg_splitjson'` only for sessions that need automatic SELECT rewriting, or issue `LOAD 'pg_splitjson'` before planning. Create managed views and indexes as the installer, then use `splitjson.grant_access` for application roles.
+Use `enable_rls`, `set_policy` and `drop_policy` only through their installer APIs. Policy expressions are parsed as native PostgreSQL expressions; they may use id, business columns, declared hot values and approved identity expressions. Cold/doc access, subqueries, dynamic paths and user functions are rejected. The public C entry captures the actual caller before private metadata access, so USING/WITH CHECK, `SET ROLE`, `SESSION AUTHORIZATION`, prepared plans, security barriers and MVCC remain native PostgreSQL behavior. Test every application role, including `row_security=off`, BYPASSRLS and FORCE RLS cases.
 
-Run `SELECT splitjson.check_all(true);` after loading data and before opening traffic. Keep `splitjson.table_stats()` and PostgreSQL relation statistics in the operational dashboard.
+## Upgrades, backup and recovery
 
-## Upgrade from official 0.1.0
+Upgrade the supported catalog transactionally with `ALTER EXTENSION pg_splitjson UPDATE TO '0.3.0';`, then run `check_all(true)`. The 0.1.0 → 0.2.0 → 0.3.0 path preserves old API OIDs, public row types and raw cold values. Unknown or drifted layouts are rejected. Use whole-database `pg_dump -Fc`/`pg_restore` or physical backups; `pg_dump -t` on a business view does not include private storage dependencies. After restore, PITR, physical promotion or logical takeover, call `reinitialize_table(table,'restore'|'recovery'|'takeover')` before reopening writes. This rotates the epoch and initializes the relation sequence above retained revisions without rewriting cold data. Run `check_all(true)` and compare business-view rows before traffic resumes.
 
-1. Confirm the source is the official 0.1.0 catalog, not an early prototype or hand-modified layout.
-2. Install the 0.2.0 library and extension SQL files without stopping or modifying unrelated PostgreSQL instances.
-3. Drain or reconnect application sessions that loaded the old shared library.
-4. In each database run `ALTER EXTENSION pg_splitjson UPDATE TO '0.2.0';` and then `SELECT splitjson.check_all(true);`.
-5. Reapply application EXECUTE grants through `splitjson.grant_access` if the role contract requires them. Validate old plans, permissions, indexes and logical row counts.
+## Online layout migration
 
-The script is transactional and refuses unknown 0.1.0 definitions. Earlier prototypes and changed layouts require a fresh install plus logical export/import or `splitjson.migrate_table`; never overwrite a loaded shared library for an online same-version upgrade.
+`splitjson.prepare_online_migration` creates a new follower target and an owned logical slot. Run `python3 scripts/splitjson-migrate.py start --source public.events --target public.events_v2 --paths '[["state"],["items",0]]'` with the target connection environment set through libpq. The runner keeps the exported snapshot alive through copy, applies complete source transactions, stores original-layout state for unchanged TOAST, commits target rows and progress together, and acknowledges the slot afterward. `status` reports retained bytes, slot/WAL loss, source fingerprint and fence evidence; `abort` drops only the task's slot and retains source/partial target for review. On final cutover call `complete`, which establishes an ACCESS EXCLUSIVE source write fence, replays through the final LSN, compares logical rows, rotates the target epoch and leaves the fenced source retained. The application must switch traffic explicitly; the extension never renames the source view.
 
-## Backup and recovery
+## Same-layout logical replication
 
-Use whole-database `pg_dump -Fc`/`pg_restore` or a physical backup that includes the extension files. A view-only `pg_dump -t` omits private storage dependencies. For restore into a new database, use the installer-controlled `session_replication_role=replica` procedure required by the dump order, then run `SELECT splitjson.check_all(true);` before granting traffic.
+Use `scripts/splitjson-replication.py` with a libpq `service` or passfile reference; do not put passwords in command lines, manifests or reports. `prepare` transfers a manifest and provisions a fresh private storage relation with the same physical name/layout. `start` creates an explicitly named storage publication and subscription; business views and extension catalogs are not published. `status` reports native subscription workers, relation sync state, publisher slot/WAL retention and errors. `stop`/`resume` control the native worker. `takeover` requires a source `fence_writes` barrier, a replicated private marker, the final confirmed LSN, zero active workers, exact logical-row equality and `check_all`; it then rotates the target epoch and enables local hot APIs. The source remains retained and fenced. `detach` cleans only the registered publication, subscription, slot and marker.
 
-Physical streaming replication, PITR and promotion require the same PostgreSQL minor/ABI and extension files. The extension uses normal heap, WAL, MVCC and TOAST recovery; it does not provide a separate redo protocol. Across PostgreSQL major versions use logical export/import. After an incident, compare business-view rows and run `check_all(true)` before resuming writes.
+RLS and ACLs are deployed explicitly at the subscriber. Native apply preserves the publisher's physical revision and skips split triggers; application roles remain subject to the subscriber's local policies. DDL, path changes, indexes, policies, credentials and roles are never implicitly replicated. Same-layout PG18.6/0.3.0 is required. Cross-layout automatic reassembly, multi-primary writes and publication of business views are unsupported.
 
-## Online operations
+## Routine operations and rollback
 
-Use only the dedicated hot APIs for the fast-update contract. A regular `UPDATE view SET doc = ...` restores and repacks the document and synchronizes hot columns. `index_ddl` returns reviewed SQL; execute `CREATE INDEX CONCURRENTLY` outside a transaction and monitor invalid indexes. Schedule `VACUUM (ANALYZE)` and `REINDEX` according to observed statistics. A changed indexed hot column can prevent HOT even when the cold TOAST value is reused.
+Dedicated hot APIs update existing hot scalar/object/array paths without reading or assigning cold. `set_fields` writes once; `increment_field` reads and calculates under one row lock. Document replacement and structural changes take the native JSONB fallback. Monitor index validity and run `VACUUM (ANALYZE)`/`REINDEX` based on observed statistics. Keep the source relation during migration/replication retention windows. Roll back by stopping traffic, restoring the last tested backup or switching to the retained source; do not downgrade extension catalogs in place.
 
-The release does not support RLS, partitioned managed relations, view `ON CONFLICT`, automatic logical replication reassembly or general duality views. Treat these as deployment blockers and use an explicitly supported relational design instead.
-
-## Rollback and cutover
-
-Rollback an upgrade by restoring the tested pre-upgrade database and matching 0.1.0 library/SQL files; do not downgrade catalogs in place. For a layout migration, keep the source table unchanged, pause or synchronize writes, compare rows, grant the new view, switch traffic, and retain the source until the retention window expires.
+Native view `ON CONFLICT`, arbitrary view-DML translation, non-id partition keys, cross-major physical upgrades, cross-layout logical reassembly, multi-primary operation and general Oracle-style duality views are outside this extension.

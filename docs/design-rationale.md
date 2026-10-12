@@ -2,7 +2,7 @@
 
 **English** | [简体中文](design-rationale.zh-CN.md) · [Documentation](README.md)
 
-This guide explains the design choices of **PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.2.0**. Its starting point is Yin Haiwen's (尹海文, 胖头鱼的鱼缸) article, [“胖头鱼的技术专栏-468 JSON改一个字段，凭什么要重写整篇？（20260910）”](https://blog.csdn.net/yhw1809/article/details/164757146), published on 2026-09-10. The article discusses frequent updates, write amplification, JSON access over relational storage, and extracting frequently changed fields. This guide develops those ideas for the implemented PostgreSQL extension; the [validation report](validation.md) remains the source of project measurements.
+This guide explains the design choices of **PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.3.0**. Its starting point is Yin Haiwen's (尹海文, 胖头鱼的鱼缸) article, [“胖头鱼的技术专栏-468 JSON改一个字段，凭什么要重写整篇？（20260910）”](https://blog.csdn.net/yhw1809/article/details/164757146), published on 2026-09-10. The article discusses frequent updates, write amplification, JSON access over relational storage, and extracting frequently changed fields. This guide develops those ideas for the implemented PostgreSQL extension; the [validation report](validation.md) remains the source of project measurements.
 
 ## From the article to PG SplitJSON
 
@@ -10,7 +10,7 @@ The useful design question is how much unchanged data the storage engine must pr
 
 The article's PostgreSQL alternative extracts frequently changed fields into ordinary columns and retains semistatic attributes in JSONB. Its discussion of JSON Relational Duality Views also highlights a broader idea: JSON can be an application interface over relational storage. PG SplitJSON applies that idea to declared object and fixed array paths within one row. It keeps the cold document template and stores each present hot value once in a separate column, reconstructing the document through a business view.
 
-| Design idea from the article | Implementation in 0.2.0 | Boundary |
+| Design idea from the article | Implementation in 0.3.0 | Boundary |
 | --- | --- | --- |
 | Separate frequently changed fields from large attributes | Declared hot JSONB columns plus a cold template | Existing hot fields/subtrees use dedicated APIs |
 | Keep JSON convenient at the application boundary | View exposes a complete doc and business columns | Full reads reconstruct doc; integration uses explicit APIs |
@@ -18,7 +18,7 @@ The article's PostgreSQL alternative extracts frequently changed fields into ord
 | Avoid two authoritative copies of the same value | Present hot paths hold placeholders, not duplicated values | Fallback writes synchronize template and hot columns transactionally |
 | Model independently changing collection members separately | Ordinary relational tables can hold per-item/per-event rows | Automatic array-to-child-table mapping is not implemented |
 
-This is a focused split-storage extension. General duality views are outside the project's scope, rather than a future feature. JSON Patch translation, ETags and cross-table JSON assembly are not provided. `set_fields` has its own ordered `path`/`value` format; it is neither RFC 6902 JSON Patch nor RFC 7396 JSON Merge Patch.
+This is a focused split-storage extension. General duality views are outside the project's scope, rather than a future feature. JSON Patch/Merge Patch、版本令牌和显式布局迁移已提供；跨表 JSON 组装仍由应用设计。 `set_fields` has its own ordered `path`/`value` format; it is neither RFC 6902 JSON Patch nor RFC 7396 JSON Merge Patch.
 
 ## What changes physically
 
@@ -63,7 +63,7 @@ Only index hot paths that need equality searches. A storage declaration creates 
 | Logistics | latest.state, latest.timestamp | Frequently appended history still rewrites its value; consider an event table |
 | Semistatic configuration | Only fields shown to be frequent | Ordinary JSONB may be sufficient when updates are rare |
 
-Hot paths cannot overlap. Declaring both `stats` and `stats.count` is invalid; choose the unit you intend to replace. Updating a hot parent uses fallback; descendants inside an existing hot object/array can update that hot column alone. Dynamic layout changes are not supported in 0.2.0, so choose paths before loading data and use a newly managed target for a later layout migration.
+Hot paths cannot overlap. Declaring both `stats` and `stats.count` is invalid; choose the unit you intend to replace. Updating a hot parent uses fallback; descendants inside an existing hot object/array can update that hot column alone. Layout changes use a new managed target through snapshot or online migration; the source layout remains unchanged until the application performs an explicit cutover.
 
 Separate hot columns remain in the **same heap row**. Updates to stock and status on the same ID serialize on a row lock; this design reduces cold writes, not same-row lock contention. For independently writable items, consider separate rows. Dedicated numeric increments are atomic, but they do not by themselves enforce nonnegative stock, price scale or other business invariants. For database-enforced rules, consider an explicitly constrained relational model or suitable domain-backed business columns, and design validation for JSON updates. Hot JSONB values are not automatically converted to those column types.
 
@@ -132,4 +132,4 @@ For implemented array operations, query forms and fallback boundaries, see the [
 - [PostgreSQL 18 TOAST](https://www.postgresql.org/docs/18/storage-toast.html) and [HOT](https://www.postgresql.org/docs/18/storage-hot.html): unchanged external values and heap-update/index costs.
 - [PostgreSQL 18 branch, jsonfuncs.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/adt/jsonfuncs.c): jsonb_set constructs the resulting JSONB value, without a stored-value patch API.
 - [PostgreSQL 18 statistics](https://www.postgresql.org/docs/18/monitoring-stats.html) and [routine vacuuming](https://www.postgresql.org/docs/18/routine-vacuuming.html): counter interpretation and maintenance.
-- [PG SplitJSON validation](validation.md) and [API reference](api-reference.md): measured behavior and the 0.2.0 contract.
+- [PG SplitJSON validation](validation.md) and [API reference](api-reference.md): measured behavior and the 0.3.0 contract.

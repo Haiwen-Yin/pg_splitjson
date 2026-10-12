@@ -1,8 +1,8 @@
-# PG SplitJSON 0.2.0 API 参考
+# PG SplitJSON 0.3.0 API 参考
 
 [English](api-reference.md) | **简体中文** · [文档目录](README.zh-CN.md)
 
-本文列出 **PostgreSQL Split JSON Storage Extension（PG SplitJSON）0.2.0** 的业务 API。安装 `pg_splitjson`，使用 `splitjson` schema。签名以[安装 SQL](../sql/pg_splitjson--0.2.0.sql)为依据。
+本文列出 **PostgreSQL Split JSON Storage Extension（PG SplitJSON）0.3.0** 的业务 API。安装 `pg_splitjson`，使用 `splitjson` schema。签名以[安装 SQL](../sql/pg_splitjson--0.3.0.sql)为依据。
 
 ## 通用约定
 
@@ -216,6 +216,28 @@ SELECT splitjson.drop_table('public.api_copy');
 SELECT splitjson.drop_table('public.api_events');
 DROP TABLE public.api_source;
 ```
+
+## 0.3.0 条件写入与策略 API
+
+0.3.0 API 保留 0.2.0 视图和热路径契约。`row_revision` 返回不透明的 `epoch:id:revision` 并发令牌，不是授权凭据。`set_fields_if_revision`、`apply_patch` 和 `merge_patch` 在同一事务锁定行、比较令牌并计算变化。令牌过期返回 `40001`；可见行缺失遵循各 helper 的结果约定。只包含 `test` 的只读 Patch 返回已有令牌，不产生写入。
+
+```sql
+SELECT splitjson.row_revision('public.events', 1);
+SELECT splitjson.set_fields_if_revision('public.events', 1,
+    splitjson.row_revision('public.events', 1),
+    '[{"path":["state"],"value":"ready"}]');
+SELECT splitjson.apply_patch('public.events', 1,
+    '[{"op":"test","path":"/state","value":"ready"},
+      {"op":"replace","path":"/state","value":"done"}]');
+SELECT splitjson.merge_patch('public.events', 1, '{"obsolete":null,"nested":{"ok":true}}');
+SELECT splitjson.upsert_document('public.events', 2, '{"state":"new"}', '{"tenant_id":101}');
+```
+
+JSON Patch 按 RFC 6901/6902 实现六种操作、转义指针、数组位置和 `-`；由于文档必须存在，根 `remove` 返回 `0A000`，文档中称为配置集。非法指针/操作返回 `22023`，`test` 失败返回 `40001`。Merge Patch 按 RFC 7396，包括对象递归合并、成员 null 删除以及标量/数组/根替换。
+
+`find_ids_range` 支持登记的 numeric、boolean、text 热路径及带类型边界的开闭范围。错误 JSON 类型会拒绝，不会把字符串强制转换。`enable_rls` 和 `set_policy` 在私有存储关系安装原生策略，业务视图仍是应用边界；策略可使用 id、业务列和 `splitjson.policy_field` 登记热值。cold/doc、动态路径、子查询和任意函数会拒绝。
+
+`create_partitioned_table` 支持仅以 id 为键的 HASH 或 RANGE 私有父表；`create_partition`、`detach_partition` 和 `partition_index_ddl` 管理 RANGE 叶并返回逐叶并发建索引步骤。`migration_plan`、`migrate_layout`、`export_manifest`、`export_rows`、`replication_manifest`、`replication_ddl` 和 `prepare_replica_manifest` 提供快照可移植性与同布局复制准备。`prepare_online_migration`、`migration_status`、`abort_migration` 和 `complete_migration` 提供在线 WAL 生命周期。`scripts/splitjson-replication.py` 创建原生 publication/subscription、报告 worker/slot 状态并执行带屏障接管；凭据和后续 DDL 不会隐式复制。跨布局重组和视图 `ON CONFLICT` 仍排除。
 
 ## 事务、权限与错误
 

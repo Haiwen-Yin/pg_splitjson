@@ -7,3 +7,5 @@ regression.out
 tmp_check/
 .lab/
 /build_output/
+__pycache__/
+*.pyc

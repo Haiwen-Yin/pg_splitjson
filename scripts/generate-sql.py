@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate install and upgrade SQL from shared, reviewable sources."""
 import argparse
+import re
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
@@ -14,11 +15,60 @@ metadata = (parts / 'metadata.sql').read_text()
 shared = ''.join((parts / name).read_text() + '\n' for name in
                  ('management.sql', 'core-functions.sql', 'access.sql'))
 upgrade = (parts / 'upgrade-preflight.sql').read_text()
+# CREATE OR REPLACE preserves public function OIDs, trigger dependencies,
+# argument defaults, result descriptors and grants across the supported upgrade.
+# Trusted private implementations are called by the invoker C entry; they never
+# expose their metadata privilege to a business SQL statement.
+data_entries = {
+    '_view_write', 'set_field', 'set_fields', 'increment_field', 'delete_field',
+    'get_field', 'find_ids', 'row_revision', 'set_fields_if_revision', 'apply_patch',
+    'merge_patch', 'upsert_document', 'find_ids_range', 'export_rows', 'export_manifest', 'migration_plan', 'migrate_layout',
+}
+admin_entries = {
+    'create_table', 'drop_table', 'migrate_table', 'storage_relation', 'check_table',
+    'check_all', 'table_stats', 'rename_table', 'set_business_not_null',
+    'set_business_default', 'set_business_collation', 'add_field_check', 'index_ddl', 'explain_find_ids',
+    'create_path_index', 'grant_access', 'enable_rls', 'set_policy', 'drop_policy',
+    'create_partitioned_table', 'create_partition', 'attach_partition', 'prepare_replica', 'replication_status', 'takeover_replica',
+    'detach_partition', 'partition_index_ddl', 'fence_writes', 'prepare_online_migration', 'migration_status', 'abort_migration', 'mark_migration_state', 'complete_migration', 'import_manifest', 'import_row',
+    'reinitialize_table', 'replication_manifest', 'replication_ddl', 'prepare_replica_manifest', 'register_replica_subscription', 'stop_replica', 'declare_path_type', 'register_path_index',
+}
+function = re.compile(
+    r'(?P<header>CREATE(?: OR REPLACE)? FUNCTION splitjson\.(?P<name>\w+)\((?P<args>[^;]*?)\)\s*'
+    r'RETURNS (?P<result>[^;]*?))\s+LANGUAGE (?P<attributes>[^;]*?)\s+'
+    r'(?P<body>AS \$\$.*?\$\$;|RETURN .*?;)', re.S)
+
+def entry_function(match):
+    name = match['name']
+    if name not in data_entries | admin_entries:
+        return match[0]
+    attributes = match['attributes']
+    header = match['header']
+    private = header.replace('splitjson.' + name + '(', 'splitjson._api_' + name + '(', 1)
+    if 'SECURITY DEFINER' not in attributes:
+        attributes = attributes.replace('SET search_path', 'SECURITY DEFINER SET search_path')
+    impl = private + '\nLANGUAGE ' + attributes + '\n' + match['body']
+    symbol = ('pg_splitjson_view_entry' if name == '_view_write' else
+              'pg_splitjson_data_entry' if name in data_entries else 'pg_splitjson_admin_entry')
+    volatility = 'IMMUTABLE' if 'IMMUTABLE' in attributes else 'STABLE' if 'STABLE' in attributes else 'VOLATILE'
+    public = header.replace('CREATE FUNCTION', 'CREATE OR REPLACE FUNCTION', 1)
+    public += "\nLANGUAGE C " + volatility + " SECURITY INVOKER SET search_path=pg_catalog,pg_temp\n"
+    public += "AS 'MODULE_PATHNAME','" + symbol + "';"
+    return impl + '\n\n' + public
+
+feature_parts = ('catalog.sql', 'primitives.sql', 'management.sql', 'runtime.sql',
+                 'writes.sql', 'rls.sql', 'partition.sql', 'indexes.sql', 'portability.sql', 'lifecycle.sql', 'grants.sql')
+feature_sql = ''.join(function.sub(entry_function, (root / 'sql' / 'parts-0.3.0' / name).read_text()) + '\n'
+                      for name in feature_parts)
+feature_sql += (root / 'sql' / 'parts-0.3.0' / 'finalize.sql').read_text()
 outputs = {
     'pg_splitjson--0.2.0.sql': header + catalog + metadata + shared,
     'pg_splitjson--0.1.0--0.2.0.sql': header +
         '\\echo Use "ALTER EXTENSION pg_splitjson UPDATE TO \'0.2.0\'" to load this file. \\quit\n' +
         upgrade + metadata + shared,
+    'pg_splitjson--0.3.0.sql': header + catalog + metadata + shared + '\n' + feature_sql,
+    'pg_splitjson--0.2.0--0.3.0.sql': header +
+        "\\echo Use \"ALTER EXTENSION pg_splitjson UPDATE TO '0.3.0'\" to load this file. \\quit\n" + feature_sql,
 }
 for name, content in outputs.items():
     path = root / 'sql' / name

@@ -10,7 +10,7 @@
 | Short name | PG SplitJSON |
 | Chinese description | PostgreSQL JSON 分离存储扩展 |
 | Extension identifier | `pg_splitjson` |
-| Extension version | `0.2.0` |
+| Extension version | `0.3.0` |
 | License | [Apache License 2.0](../LICENSE) (`Apache-2.0`) |
 | Target / verified PostgreSQL | 18 / 18.6 |
 | Public API schema | `splitjson` |
@@ -39,7 +39,7 @@ Yin Haiwen's [article on frequent JSON updates](https://blog.csdn.net/yhw1809/ar
 
 The [design and workload guide](design-rationale.md) connects this idea to product/SKU, order, inventory and logistics scenarios, and explains path selection, query/index costs and vacuum observation. Cold reuse improves write behavior while MVCC and same-row lock contention remain.
 
-## Capabilities in 0.2.0
+## Capabilities in 0.3.0
 
 | Area | Capability |
 | --- | --- |
@@ -52,10 +52,6 @@ The [design and workload guide](design-rationale.md) connects this idea to produ
 
 ## Scope and evidence
 
-Version 0.2.0 uses managed views and dedicated APIs. It adds an internal envelope rather than replacing PostgreSQL's JSONB storage format. PostgreSQL still creates new row versions; the principal optimization is reuse of a large unchanged cold TOAST value. Complete-document reads require reconstruction. Supported constant hot-path SELECT extraction can automatically use hot columns and matching indexes when the planner module is loaded before planning. The release adds an official 0.1.0 upgrade, least-privilege grants, mapping checks, DDL controls, operations helpers and recovery procedures.
+Version 0.3.0 keeps PostgreSQL's heap, MVCC, WAL and TOAST mechanisms and adds caller-aware RLS, id-only HASH/RANGE storage, revision tokens, upsert/Patch/Merge Patch, typed indexes and range helpers, snapshot portability, online WAL migration, same-layout logical replication and recovery epoch initialization. Existing exact hot updates reuse the cold TOAST value; complete reads reconstruct the document. The [validation report](validation-030.md) records the final PG18.6 labs and workload-specific measurements.
 
-Paths support nested objects and fixed array indexes; operation paths follow native array semantics including negative indexes. Numeric text extraction paths and scalar-sensitive final ->0 keep native expressions. Dynamic wildcards are unsupported. Migration copies data and column types, leaving the source unchanged; constraints, defaults, permissions and subsequent source writes are not copied. Dynamic hot-path changes, view `ON CONFLICT`, RLS, partitioning and automatic logical replication reassembly are not provided.
-
-An isolated PG18.6 comparison of 300 updates to a roughly 256 KiB document measured **86,795,752 vs 64,144 WAL bytes** and **671.824 vs 82.799 ms** for native JSONB and PG SplitJSON. These are workload-specific results, not a production throughput guarantee. See the [validation report](validation.md) for conditions, evidence and measurement limits.
-
-For installation and examples, see the [README](../README.md); for precise contracts, see the [API reference](api-reference.md).
+The release supports nested object paths and fixed array indexes, native operation semantics, explicit text collation and safe exact-path query rewriting. Dynamic wildcards, cross-layout automatic logical reassembly, view `ON CONFLICT`, non-id partition keys and general duality views remain outside scope. For installation and examples, see the [README](../README.md); for exact signatures, see the [API reference](api-reference.md).

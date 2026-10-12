@@ -1,8 +1,8 @@
-# PG SplitJSON 0.2.0 validation report
+# PG SplitJSON 0.3.0 validation report
 
 **English** | [简体中文](validation.zh-CN.md) · [Documentation](README.md)
 
-The production-hardening suite passed on **PostgreSQL 18.6**, Linux x86_64, in a fresh isolated lab copied from `/usr/local/pgsql-18.6` on 10.10.10.131. The lab used a unique `/tmp/pg_splitjson-lab.*` prefix, private socket, `listen_addresses=''`, and a new PGDATA; no existing PostgreSQL instance was connected to or changed. Raw logs are in [validation/pg-splitjson-0.2.0/](validation/pg-splitjson-0.2.0/).
+The production-hardening suite passed on **PostgreSQL 18.6**, Linux x86_64, in a fresh isolated lab copied from `/usr/local/pgsql-18.6` on 10.10.10.131. The lab used a unique `/tmp/pg_splitjson-lab.*` prefix, private socket, `listen_addresses=''`, and a new PGDATA; no existing PostgreSQL instance was connected to or changed. Raw logs are in [validation/pg-splitjson-0.3.0/](validation/pg-splitjson-0.3.0/).
 
 ## Release and correctness
 
@@ -10,7 +10,7 @@ The production-hardening suite passed on **PostgreSQL 18.6**, Linux x86_64, in a
 | --- | --- |
 | Build | PGXS compile and install completed without warnings |
 | Regression | `make installcheck`: 1/1 production test passed |
-| Upgrade | Official 0.1.0 to 0.2.0 passed; cold pointer/chunks preserved |
+| Upgrade | Official 0.1.0 to 0.3.0 passed; cold pointer/chunks preserved |
 | Differential | 5,000 seeded JSONB operations passed |
 | Arrays | Native set/delete behavior, fixed slots and structural repacking passed |
 | Concurrency | Object, fixed-array and subtree increments completed without loss |
@@ -22,7 +22,7 @@ Evidence: `installcheck.log`, `upgrade.log`, `randomized.log`, `production_featu
 
 ## Recovery
 
-The same fresh cluster passed immediate crash recovery, named restore-point PITR, streaming standby replay and promotion. Committed hot/cold values and business rows survived; the uncommitted row was absent after crash recovery; PITR stopped before the post-target row; the promoted standby accepted a hot update. Evidence: [recovery.log](validation/pg-splitjson-0.2.0/recovery.log).
+The same fresh cluster passed immediate crash recovery, named restore-point PITR, streaming standby replay and promotion. Committed hot/cold values and business rows survived; the uncommitted row was absent after crash recovery; PITR stopped before the post-target row; the promoted standby accepted a hot update. Evidence: [recovery.log](validation/pg-splitjson-0.3.0/recovery.log).
 
 Physical recovery is only supported with the same PostgreSQL minor/ABI and extension files. Across PostgreSQL major versions use logical export/import. Run `splitjson.check_all(true)` after every restore or promotion before returning traffic.
 

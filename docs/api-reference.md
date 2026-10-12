@@ -1,8 +1,8 @@
-# PG SplitJSON 0.2.0 API reference
+# PG SplitJSON 0.3.0 API reference
 
 **English** | [简体中文](api-reference.zh-CN.md) · [Documentation](README.md)
 
-These are the business APIs of **PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.2.0**. Install `pg_splitjson`; use the `splitjson` schema. Signatures follow [the installation SQL](../sql/pg_splitjson--0.2.0.sql).
+These are the business APIs of **PostgreSQL Split JSON Storage Extension (PG SplitJSON) 0.3.0**. Install `pg_splitjson`; use the `splitjson` schema. Signatures follow [the installation SQL](../sql/pg_splitjson--0.3.0.sql).
 
 ## Shared conventions
 
@@ -216,6 +216,28 @@ SELECT splitjson.drop_table('public.api_copy');
 SELECT splitjson.drop_table('public.api_events');
 DROP TABLE public.api_source;
 ```
+
+## 0.3.0 conditional and policy APIs
+
+The 0.3.0 APIs preserve the 0.2.0 view and hot-path contracts. `row_revision` returns an opaque `epoch:id:revision` concurrency token; it is not an authorization credential. `set_fields_if_revision`, `apply_patch` and `merge_patch` lock the row, compare the token and compute the change in one transaction. A stale token raises `40001`; a missing visible row follows the helper result contract. A read-only Patch containing only `test` returns the existing token without writing.
+
+```sql
+SELECT splitjson.row_revision('public.events', 1);
+SELECT splitjson.set_fields_if_revision('public.events', 1,
+    splitjson.row_revision('public.events', 1),
+    '[{"path":["state"],"value":"ready"}]');
+SELECT splitjson.apply_patch('public.events', 1,
+    '[{"op":"test","path":"/state","value":"ready"},
+      {"op":"replace","path":"/state","value":"done"}]');
+SELECT splitjson.merge_patch('public.events', 1, '{"obsolete":null,"nested":{"ok":true}}');
+SELECT splitjson.upsert_document('public.events', 2, '{"state":"new"}', '{"tenant_id":101}');
+```
+
+JSON Patch follows RFC 6901/6902 semantics for six operations, escaped pointers, array positions and `-`; it is a documented profile because root `remove` is rejected with `0A000` while a document is mandatory. Invalid pointers/operations use `22023`, and a failed `test` uses `40001`. Merge Patch follows RFC 7396, including recursive object null deletion and whole scalar/array/root replacement.
+
+`find_ids_range` supports registered numeric, boolean and text hot paths with typed bounds and open/closed limits. Wrong JSON types are rejected rather than coercing strings. `enable_rls` and `set_policy` install native policies on the private storage relation while the business view remains the application boundary; policies can reference id, business columns and registered hot values through `splitjson.policy_field`. Cold/doc, dynamic paths, subqueries and arbitrary functions are rejected.
+
+`create_partitioned_table` supports an id-only HASH or RANGE private parent; `create_partition`, `detach_partition` and `partition_index_ddl` manage supported RANGE leaves and return per-leaf concurrent index steps. `migration_plan`, `migrate_layout`, `export_manifest`, `export_rows`, `replication_manifest`, `replication_ddl` and `prepare_replica_manifest` provide snapshot portability and same-layout replication preparation. `prepare_online_migration`, `migration_status`, `abort_migration` and `complete_migration` provide the online WAL lifecycle. `scripts/splitjson-replication.py` provisions native publication/subscription, reports worker/slot state and performs fenced takeover; credentials and later DDL are never implicit. Cross-layout reassembly and view `ON CONFLICT` remain excluded.
 
 ## Transactions, permissions and errors
 

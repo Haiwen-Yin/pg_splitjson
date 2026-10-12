@@ -1,16 +1,16 @@
 # PostgreSQL Split JSON Storage Extension
 
-**PG SplitJSON · `pg_splitjson` · 0.2.0**
+**PG SplitJSON · `pg_splitjson` · 0.3.0**
 
 **English** | [简体中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Project introduction](docs/introduction.md) · [API reference](docs/api-reference.md) · [Release note](RELEASE_NOTE.md)
 
 Licensed under the [Apache License 2.0](LICENSE) (`Apache-2.0`).
 
-A PostgreSQL 18 extension for frequent JSON field updates. Declared hot paths are stored in separate ordinary columns; the remaining content is stored in a TOASTable `splitjson.cold` template. Applications read and write a view containing `id`, `doc` and optional business columns. **Dedicated APIs update existing hot fields and object/array subtrees without reading or rewriting the cold template. Version 0.2.0 also supports fixed array hot paths and automatic SELECT query rewriting.**
+A PostgreSQL 18 extension for frequent JSON field updates. Declared hot paths are stored in separate ordinary columns; the remaining content is stored in a TOASTable `splitjson.cold` template. Applications read and write a view containing `id`, `doc` and optional business columns. **Dedicated APIs update existing hot fields and object/array subtrees without reading or rewriting the cold template. Version 0.3.0 also supports fixed array hot paths and automatic SELECT query rewriting.**
 
-Version 0.2.0 is the production-hardening release with a buildable, tested business view, dedicated update APIs, transactional upgrade and recovery evidence. `splitjson.cold` is a new internal envelope that reuses PostgreSQL JSONB payloads. It does not replace the core JSONB format or add native hidden columns.
+0.3.0 is validated on PG18.6/Linux x86_64. RLS identity, conditional writes, typed indexes, suffix rewriting, native id partitioning, online migration, native logical subscription/takeover and combined recovery pass isolated server gates. The preserved 0.2.0 archive remains unchanged; the 0.3.0 source package is generated only from the explicit release file list. See [validation](docs/validation-030.md) and the [production runbook](docs/production-runbook.md). `splitjson.cold` reuses JSONB payloads inside an extension envelope.
 
-The installation name is `pg_splitjson`; SQL APIs use `splitjson.*`. PostgreSQL reserves the `pg_` schema prefix, so the public and private schemas are `splitjson` and `splitjson_storage`. The extension version is **0.2.0**.
+The installation name is `pg_splitjson`; SQL APIs use `splitjson.*`. PostgreSQL reserves the `pg_` schema prefix, so the public and private schemas are `splitjson` and `splitjson_storage`. The extension version is **0.3.0**.
 
 ## Design background
 
@@ -170,7 +170,7 @@ A “storage index” means the hot-path layout declaration. `create_path_index`
 
 ## Build and validation
 
-Release artifacts are stored in `build_output/<version>/`. For 0.2.0, the source ZIP and its SHA-256 file are `build_output/0.2.0/pg_splitjson-0.2.0.zip` and `build_output/0.2.0/pg_splitjson-0.2.0.zip.sha256`. Git ignores this generated output directory.
+Release artifacts are stored in `build_output/<version>/`. For 0.3.0, the source ZIP and its SHA-256 file are `build_output/0.3.0/pg_splitjson-0.3.0.zip` and `build_output/0.3.0/pg_splitjson-0.3.0.zip.sha256`. Git ignores this generated output directory.
 
 Requirements: PG18 server headers/PGXS, a C compiler, make, and PostgreSQL's PL/pgSQL. Full validation also needs PG18 `pageinspect` for tests. Use an isolated PG18 installation prefix for these commands; `make install` writes to the selected installation:
 
@@ -193,19 +193,19 @@ Validation covers 256 document shapes, one-write batches, atomic increments, bus
 
 ## Backup and limitations
 
-Whole-database `pg_dump -Fc` / `pg_restore` has been verified. Metadata records qualified relation names; extension configuration tables and the naming sequence are dumped without depending on original database OIDs. For logical migration, copy `SELECT * FROM view` into ordinary JSONB/business columns.
+Whole-database `pg_dump -Fc` / `pg_restore` has been verified. Metadata records qualified relation names; extension configuration tables and the naming sequence are dumped without depending on original database OIDs. For snapshot portability use `scripts/splitjson-portability.py`; for online layout changes use `scripts/splitjson-migrate.py`; for same-layout replication use `scripts/splitjson-replication.py`.
 
-Version 0.2.0 uses fixed id/doc names and supports additional business columns. Hot paths cannot be changed dynamically. Do not modify internal tables or directly DROP/RENAME managed views or storage tables. Use `splitjson.drop_table`:
+Version 0.3.0 uses fixed id/doc names and supports additional business columns. Hot paths cannot be changed dynamically. Do not modify internal tables or directly DROP/RENAME managed views or storage tables. Use `splitjson.drop_table`:
 
 ```sql
 -- Run when the example data is no longer needed; remove view, storage and metadata.
 SELECT splitjson.drop_table('public.events');
 ```
 
-View `ON CONFLICT`, RLS, partitioning, automatic logical replication reassembly and full ORM transparency are not provided. A `pg_dump -t` of only a business view does not include all storage dependencies; use a whole-database backup or logical export.
+Native view `ON CONFLICT`, arbitrary view-DML translation, cross-layout logical reassembly and full ORM transparency are not provided. Managed RLS, id-only partitioning, online migration and same-layout logical replication are supported through their explicit APIs. A `pg_dump -t` of only a business view does not include all storage dependencies; use a whole-database backup or the reviewed logical export tools.
 
 PostgreSQL MVCC still creates a new heap tuple. Small inline templates are copied with each row version, and large hot values may generate their own TOAST writes. The optimization avoids rewriting a large unchanged cold value; reading a complete JSON document requires reassembly, and ordinary UPDATE does not guarantee a fast update.
 
-The early unpublished prototype was named `pgjson`. The official 0.2.0 upgrade accepts only the formal 0.1.0 catalog shape; earlier prototypes or altered layouts must use a fresh installation and logical migration. Do not overwrite a loaded library for an online upgrade. Logically export prototype data into newly created SplitJSON views, or use `migrate_table` for an ordinary JSONB table. Historical logs retain the old name.
+The early unpublished prototype was named `pgjson`. The official 0.3.0 upgrade accepts only the formal 0.1.0 catalog shape; earlier prototypes or altered layouts must use a fresh installation and logical migration. Do not overwrite a loaded library for an online upgrade. Logically export prototype data into newly created SplitJSON views, or use `migrate_table` for an ordinary JSONB table. Historical logs retain the old name.
 
-[OpenSpec](openspec/) records requirements, decisions and implementation work. The [arrays and query guide](docs/roadmap.md) describes implemented 0.2.0 behavior and remaining boundaries. General duality views are outside the project's scope. A changed layout still requires a new managed target and a planned logical migration; constraints and defaults are available for typed business columns.
+[OpenSpec](openspec/) records requirements, decisions and implementation work. The [arrays and query guide](docs/roadmap.md) describes implemented 0.3.0 behavior and remaining boundaries. General duality views are outside the project's scope. A changed layout still requires a new managed target and a planned logical migration; constraints and defaults are available for typed business columns.

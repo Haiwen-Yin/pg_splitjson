@@ -1,16 +1,16 @@
 # PostgreSQL Split JSON Storage Extension
 
-**PG SplitJSON · `pg_splitjson` · 0.2.0**
+**PG SplitJSON · `pg_splitjson` · 0.3.0**
 
 [English](README.md) | **简体中文** · [文档目录](docs/README.zh-CN.md) · [项目介绍](docs/introduction.zh-CN.md) · [API 参考](docs/api-reference.zh-CN.md) · [发布说明](RELEASE_NOTE.zh-CN.md)
 
 本项目采用 [Apache License 2.0](LICENSE)（`Apache-2.0`）。
 
-面向 PostgreSQL 18 的 JSON 高频更新扩展。将声明的热路径存入独立普通列，将其余内容存入可 TOAST 的 `splitjson.cold` 模板；业务通过包含 id、doc 和可选普通业务列的视图读写。**已存在的热路径及对象/数组子树通过专用 API 更新时，不读取或重写冷模板。0.2.0 同时支持固定数组热路径和 SELECT 自动查询改写。**
+面向 PostgreSQL 18 的 JSON 高频更新扩展。将声明的热路径存入独立普通列，将其余内容存入可 TOAST 的 `splitjson.cold` 模板；业务通过包含 id、doc 和可选普通业务列的视图读写。**已存在的热路径及对象/数组子树通过专用 API 更新时，不读取或重写冷模板。0.3.0 同时支持固定数组热路径和 SELECT 自动查询改写。**
 
-0.2.0 是包含生产硬化、事务升级和恢复证据的可编译、已验证版本，采用业务视图和专用更新 API。`splitjson.cold` 是新的内部封装格式，负载复用 PG JSONB；并非替换 PG 内核的 JSONB 格式或提供原生隐藏列。
+0.3.0 已在 PG18.6/Linux x86_64 上完成验证。RLS 身份、条件写入、类型索引、后缀改写、原生 id 分区、在线迁移、原生逻辑订阅/接管和组合恢复均通过隔离服务器门禁。保留的 0.2.0 压缩包保持不变；0.3.0 源码包只从显式发行文件清单生成。参见[验证报告](docs/validation-030.zh-CN.md)和[生产运行手册](docs/production-runbook.zh-CN.md)。`splitjson.cold` 在扩展封装内复用 JSONB 载荷。
 
-安装名为 `pg_splitjson`，SQL API 为 `splitjson.*`。PG 保留 schema 的 `pg_` 前缀，因此 API 和内部 schema 分别为 `splitjson`、`splitjson_storage`。版本固定为 **0.2.0**。
+安装名为 `pg_splitjson`，SQL API 为 `splitjson.*`。PG 保留 schema 的 `pg_` 前缀，因此 API 和内部 schema 分别为 `splitjson`、`splitjson_storage`。版本固定为 **0.3.0**。
 
 ## 设计背景
 
@@ -170,7 +170,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.events TO app_role;
 
 ## 编译和验证
 
-发布产物统一存放在 `build_output/<版本>/`。0.2.0 的源码 ZIP 和 SHA-256 文件分别为 `build_output/0.2.0/pg_splitjson-0.2.0.zip`、`build_output/0.2.0/pg_splitjson-0.2.0.zip.sha256`。Git 忽略该生成目录。
+发布产物统一存放在 `build_output/<版本>/`。0.3.0 的源码 ZIP 和 SHA-256 文件分别为 `build_output/0.3.0/pg_splitjson-0.3.0.zip`、`build_output/0.3.0/pg_splitjson-0.3.0.zip.sha256`。Git 忽略该生成目录。
 
 依赖：PG18 server headers/PGXS、C 编译器、make，以及 PostgreSQL 自带 PL/pgSQL。完整验证还需 PG18 的 `pageinspect`（仅测试使用）。在独立 PG18 安装前缀中执行以下命令；`make install` 会写入所选安装目录：
 
@@ -202,10 +202,10 @@ make PG_CONFIG=/path/to/isolated/pg18/bin/pg_config install
 SELECT splitjson.drop_table('public.events');
 ```
 
-视图的 `ON CONFLICT`、RLS、分区、自动逻辑复制重组和 ORM 完全透明兼容尚未提供。仅导出某个业务视图的 `pg_dump -t` 不包含它的完整存储依赖，应使用整库备份或逻辑导出。
+原生视图 `ON CONFLICT`、任意视图 DML 翻译、跨布局逻辑复制重组和 ORM 完全透明兼容不提供。受管 RLS、仅按 id 的分区、在线迁移和同布局逻辑复制通过显式 API 支持。仅导出某个业务视图的 `pg_dump -t` 不包含完整存储依赖，应使用整库备份或经过审阅的逻辑导出工具。
 
 PG MVCC 仍生成新 heap tuple；小的内联模板仍随行版本复制。热值自身很大时仍可能产生自己的 TOAST 更新。优化目标是避免重写不变的大冷值；完整 JSON 读取需要重组，普通 UPDATE 也不承诺快速更新。
 
-本项目早期未发布原型名称为 `pgjson`。正式 0.2.0 升级只接受正式 0.1.0 目录形状；更早原型或已改动布局应新安装并逻辑迁移。不要覆盖已加载的库在线升级；原型数据通过逻辑导出写入新建的 splitjson 受管视图，或用 migrate_table 接入普通 JSONB 表。历史日志保留旧名。
+本项目早期未发布原型名称为 `pgjson`。正式 0.3.0 升级只接受正式 0.1.0 目录形状；更早原型或已改动布局应新安装并逻辑迁移。不要覆盖已加载的库在线升级；原型数据通过逻辑导出写入新建的 splitjson 受管视图，或用 migrate_table 接入普通 JSONB 表。历史日志保留旧名。
 
-需求、决策和实施记录由 [OpenSpec](openspec/) 管理。[数组与查询指南](docs/roadmap.zh-CN.md)说明 0.2.0 已实现的行为与边界。通用 duality view 不属于项目范围。布局变化仍需创建新的受管目标并安排逻辑迁移；类型化业务列支持约束和默认值。
+需求、决策和实施记录由 [OpenSpec](openspec/) 管理。[数组与查询指南](docs/roadmap.zh-CN.md)说明 0.3.0 已实现的行为与边界。通用 duality view 不属于项目范围。布局变化仍需创建新的受管目标并安排逻辑迁移；类型化业务列支持约束和默认值。

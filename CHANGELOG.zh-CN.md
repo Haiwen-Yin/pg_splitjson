@@ -2,6 +2,15 @@
 
 [English](CHANGELOG.md) | **简体中文** · [文档目录](docs/README.zh-CN.md)
 
+## 0.3.0
+
+面向 PostgreSQL 18.6 的生产扩展版本。
+
+- 增加行版本代际/令牌、条件写入、按 id 原生分区辅助函数、类型化范围、upsert、RFC Patch/Merge Patch 配置集和快照可移植 API。
+- 增加受控存储表原生 RLS 生命周期及同布局复制清单，并通过独立调用者/ACL、导出快照/WAL 技术门禁。
+- 增加可选 PG18 逻辑 decoder，明确区分 unchanged TOAST、SQL NULL 和 JSON null。
+- 完整 0.2.0 回归/恢复套件继续通过；发行证据位于 `docs/validation/pg-splitjson-0.3.0/`。
+
 ## 0.2.0
 
 面向 PostgreSQL 18 的生产硬化版本。

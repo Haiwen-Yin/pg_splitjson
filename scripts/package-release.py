@@ -39,12 +39,16 @@ def release_files() -> list[Path]:
         Path("pg_splitjson.control"),
     ]
     files += sorted(Path("src").glob("*.c"))
+    files += sorted(Path("src").glob("*.h"))
+    files += sorted(Path(".").glob("pg_splitjson_decode.c"))
     files += sorted(Path("sql").glob("pg_splitjson--*.sql"))
     files += sorted(Path("sql/parts").glob("*.sql"))
+    files += sorted(Path("sql/parts-0.3.0").glob("*.sql"))
     files += sorted(Path("scripts").glob("*.py"))
     files += sorted(Path("scripts").glob("*.sh"))
     files += sorted(Path("tests").glob("*.sql"))
     files += sorted(Path("tests").glob("*.sh"))
+    files += sorted(Path("tests").glob("*.py"))
     files += sorted(Path("tests/sql").glob("*.sql"))
     files += sorted(Path("tests/expected").glob("*.out"))
     public_docs = {
@@ -62,10 +66,14 @@ def release_files() -> list[Path]:
         "docs/storage-format.zh-CN.md",
         "docs/validation.md",
         "docs/validation.zh-CN.md",
+        "docs/validation-030.md",
+        "docs/validation-030.zh-CN.md",
         "docs/production-runbook.md",
         "docs/production-runbook.zh-CN.md",
         "docs/support-matrix.md",
         "docs/support-matrix.zh-CN.md",
+        "docs/security-wal-gates-030.md",
+        "docs/security-wal-gates-030.zh-CN.md",
     }
     files += sorted(Path(name) for name in public_docs)
     missing = [path for path in files if not (ROOT / path).is_file()]

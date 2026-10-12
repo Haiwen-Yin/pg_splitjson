@@ -12,6 +12,7 @@
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
 #include "catalog/pg_type.h"
+#include "catalog/pg_namespace_d.h"
 #include "commands/extension.h"
 #include "utils/syscache.h"
 #include "parser/parsetree.h"
@@ -20,6 +21,8 @@
 #include "optimizer/planner.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_func.h"
+#include "parser/parser.h"
+#include "parser/analyze.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -27,6 +30,7 @@
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/plancache.h"
+#include "security.h"
 
 PGDLLEXPORT void _PG_init(void);
 PGDLLEXPORT void _PG_fini(void);
@@ -60,6 +64,8 @@ typedef struct Managed
     Jsonb *paths;
     List *hot;
     int *projections;
+    bool row_security;
+    Oid storage;
 } Managed;
 
 typedef struct RewriteContext
@@ -291,18 +297,19 @@ matching_slot(Managed *managed, Extraction *extraction)
 
     /* ->0 also extracts scalars as singleton arrays; declarations only extract
      * real array containers. A final ->0 must retain its native expression. */
-    if (extraction->depth > 0 && extraction->steps[extraction->depth - 1].kind == 2 &&
-        extraction->steps[extraction->depth - 1].index == 0)
-        return -1;
+
 
     for (i = 0; i < count; i++)
     {
         JsonbValue *path = getIthJsonbValueFromContainer(&managed->paths->root, i);
         int j;
+        int depth = path->type == jbvBinary ? JsonContainerSize(path->val.binary.data) : 0;
 
-        if (path->type != jbvBinary || JsonContainerSize(path->val.binary.data) != extraction->depth)
+        if (path->type != jbvBinary || JsonContainerSize(path->val.binary.data) > extraction->depth)
             continue;
-        for (j = 0; j < extraction->depth; j++)
+        if (depth <= 0 || (extraction->steps[depth-1].kind == 2 && extraction->steps[depth-1].index == 0))
+            continue;
+        for (j = 0; j < depth; j++)
         {
             JsonbValue *segment = getIthJsonbValueFromContainer(path->val.binary.data, j);
             Step *step = &extraction->steps[j];
@@ -349,7 +356,7 @@ matching_slot(Managed *managed, Extraction *extraction)
             else
                 break;
         }
-        if (j == extraction->depth)
+        if (j == depth)
         {
             if (result != -1)
                 return -1; /* Mixed shapes: retain the native expression. */
@@ -384,7 +391,7 @@ inspect_view(RangeTblEntry *rte, Index varno, Oid restore_oid)
     if (!IsA(reference, RangeTblRef))
         return NULL;
     storage = rt_fetch(reference->rtindex, query->rtable);
-    if (storage->rtekind != RTE_RELATION || storage->securityQuals ||
+    if (storage->rtekind != RTE_RELATION ||
         get_rel_namespace(storage->relid) != get_namespace_oid("splitjson_storage", true))
         return NULL;
     doc = list_nth_node(TargetEntry, query->targetList, 1);
@@ -416,6 +423,8 @@ inspect_view(RangeTblEntry *rte, Index varno, Oid restore_oid)
         return NULL;
     managed = palloc0(sizeof(Managed));
     managed->query = query;
+    managed->storage = storage->relid;
+    managed->row_security = query->hasRowSecurity || storage->securityQuals != NIL;
     managed->rte = rte;
     managed->outer_varno = varno;
     managed->doc_attr = doc->resno;
@@ -469,6 +478,44 @@ hot_value(Managed *managed, int slot, bool as_text, bool internal, Oid collation
     return value;
 }
 
+/* Reapply only the suffix using native operators. Prefix proof concerns only
+ * the declared slot; numeric text, scalar ->0 and negative suffixes keep their
+ * original PostgreSQL semantics rather than being treated as typed paths. */
+static Node *
+extracted_hot(Managed *managed, int slot, Extraction *out, bool internal, Oid collation)
+{
+    JsonbValue *path=getIthJsonbValueFromContainer(&managed->paths->root,slot);
+    int prefix=JsonContainerSize(path->val.binary.data);
+    Node *value=hot_value(managed,slot,prefix==out->depth && out->as_text,internal,collation);
+    int i;
+    for (i=prefix;i<out->depth;i++)
+    {
+        Step *step=&out->steps[i];
+        bool text_result=out->as_text && i==out->depth-1;
+        Oid rhs_type=step->kind==2 ? INT4OID : step->kind==1 ? TEXTOID : TEXTARRAYOID;
+        const char *operator=step->kind==0 ? (text_result ? "#>>" : "#>") : (text_result ? "->>" : "->");
+        OpExpr *op=makeNode(OpExpr);
+        Const *rhs;
+        if (rhs_type==INT4OID) rhs=makeConst(INT4OID,-1,InvalidOid,4,Int32GetDatum(step->index),false,true);
+        else if (rhs_type==TEXTOID) rhs=makeConst(TEXTOID,-1,DEFAULT_COLLATION_OID,-1,CStringGetTextDatum(step->key),false,false);
+        else
+        {
+            Datum element=CStringGetTextDatum(step->key);
+            rhs=makeConst(TEXTARRAYOID,-1,DEFAULT_COLLATION_OID,-1,
+                PointerGetDatum(construct_array(&element,1,TEXTOID,-1,false,TYPALIGN_INT)),false,false);
+        }
+        op->opno=OpernameGetOprid(list_make2(makeString("pg_catalog"),makeString(pstrdup(operator))),JSONBOID,rhs_type);
+        op->opfuncid=get_opcode(op->opno);
+        op->opresulttype=text_result ? TEXTOID : JSONBOID;
+        op->opcollid=text_result ? collation : InvalidOid;
+        op->inputcollid=DEFAULT_COLLATION_OID;
+        op->args=list_make2(value,rhs);
+        op->location=-1;
+        value=(Node *)op;
+    }
+    return value;
+}
+
 static Managed *
 resolve_extraction(RewriteContext *context, Extraction *out, int *slot)
 {
@@ -502,13 +549,156 @@ rewrite_expression(Node *node, RewriteContext *context)
     if (extract_path(node, &out) && out.depth > 0 &&
         (managed = resolve_extraction(context, &out, &slot)) != NULL)
     {
-        Node *replacement = hot_value(managed, slot, out.as_text, false, exprCollation(node));
-        Var *var = out.as_text ? linitial_node(Var, ((OpExpr *) replacement)->args) : (Var *) replacement;
+        Node *replacement = extracted_hot(managed, slot, &out, false, exprCollation(node));
+        Node *base = replacement;
+        Var *var;
+        while (IsA(base,OpExpr)) base=linitial(((OpExpr *)base)->args);
+        var=(Var *)base;
 
         var->varnullingrels = bms_copy(out.base->varnullingrels);
         return replacement;
     }
     return expression_tree_mutator(node, rewrite_expression, context);
+}
+
+/* Typed predicates may cross the barrier only with a validated type guard
+ * and a live registered expression index. RLS always keeps native ordering. */
+static Node *
+registered_index_expression(Managed *managed, int slot, Oid type, Oid collation)
+{
+    Oid owner=splitjson_extension_owner();
+    Oid saved_user;
+    int saved_context;
+    bool saved_check=checking_registration;
+    Oid types[3]={OIDOID,JSONBOID,TEXTOID};
+    JsonbValue *path=getIthJsonbValueFromContainer(&managed->paths->root,slot);
+    Datum values[3]={ObjectIdGetDatum(managed->storage),JsonbPGetDatum(JsonbValueToJsonb(path)),
+        CStringGetTextDatum(type==NUMERICOID ? "numeric" : type==BOOLOID ? "boolean" : "text")};
+    MemoryContext output=CurrentMemoryContext;
+    Node *result=NULL;
+
+    GetUserIdAndSecContext(&saved_user,&saved_context);
+    PG_TRY();
+    {
+        bool isnull;
+        char *expression=NULL;
+        checking_registration=true;
+        SetUserIdAndSecContext(owner,saved_context|SECURITY_LOCAL_USERID_CHANGE);
+        if (SPI_connect()!=SPI_OK_CONNECT) elog(ERROR,"SPI_connect failed");
+        if (SPI_execute_with_args(
+            "SELECT i.expression FROM splitjson._path_indexes i JOIN splitjson._tables m USING(view_name) "
+            "JOIN pg_index x ON x.indexrelid=to_regclass(i.index_name) "
+            "WHERE to_regclass(m.storage_name)=$1 AND i.path=$2 AND i.kind=$3 AND x.indisvalid AND x.indisready "
+            "AND ($3='text' OR EXISTS(SELECT 1 FROM splitjson._slot_types t JOIN pg_constraint c "
+            "ON c.conrelid=$1 AND c.conname=t.guard_name WHERE t.view_name=m.view_name AND t.path=$2 "
+            "AND t.kind=$3 AND c.convalidated AND pg_get_constraintdef(c.oid,true)=t.definition))",
+            3,types,values,NULL,true,0)!=SPI_OK_SELECT) elog(ERROR,"typed index lookup failed");
+        if (SPI_processed>0)
+        {
+            uint64 i;
+            for (i=0;i<SPI_processed;i++)
+            {
+                char *sql;
+                Query *query;
+                List *raw;
+                Node *expr;
+                expression=TextDatumGetCString(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1,&isnull));
+                sql=psprintf("SELECT %s FROM %s",expression,quote_qualified_identifier(
+                    get_namespace_name(get_rel_namespace(managed->storage)),get_rel_name(managed->storage)));
+                raw=raw_parser(sql,RAW_PARSE_DEFAULT);
+                query=parse_analyze_fixedparams(linitial_node(RawStmt,raw),sql,NULL,0,NULL);
+                expr=(Node *)linitial_node(TargetEntry,query->targetList)->expr;
+                if (exprType(expr)==type && (type!=TEXTOID || exprCollation(expr)==collation))
+                {
+                    MemoryContext previous=MemoryContextSwitchTo(output);
+                    result=copyObject(expr);
+                    MemoryContextSwitchTo(previous);
+                    break;
+                }
+            }
+        }
+        SPI_finish();
+        SetUserIdAndSecContext(saved_user,saved_context);
+        checking_registration=saved_check;
+    }
+    PG_CATCH();
+    {
+        SetUserIdAndSecContext(saved_user,saved_context);
+        checking_registration=saved_check;
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+    return result;
+}
+
+static Node *
+comparison_value(Node *node)
+{
+    if (IsA(node,Const) || (IsA(node,Param) && ((Param *)node)->paramkind==PARAM_EXTERN))
+        return node;
+    if (IsA(node,FuncExpr))
+    {
+        FuncExpr *function=(FuncExpr *)node;
+        ListCell *lc;
+        if (get_func_namespace(function->funcid)!=PG_CATALOG_NAMESPACE ||
+            func_volatile(function->funcid)!='i' || function->funcretset)
+            return NULL;
+        foreach(lc,function->args)
+            if (!IsA(lfirst(lc),Const)) return NULL;
+        node=eval_const_expressions(NULL,node);
+        if (IsA(node,Const)) return node;
+    }
+    return NULL;
+}
+
+static Node *
+typed_predicate(Node *node, RewriteContext *context)
+{
+    OpExpr *op;
+    Oid type;
+    char *name;
+    int side;
+    if (!IsA(node,OpExpr)) return NULL;
+    op=(OpExpr *)node;
+    if (list_length(op->args)!=2) return NULL;
+    type=exprType(linitial(op->args));
+    if (type!=exprType(lsecond(op->args)) || (type!=NUMERICOID && type!=BOOLOID && type!=TEXTOID)) return NULL;
+    name=get_opname(op->opno);
+    if (name==NULL || !(strcmp(name,"=")==0 || strcmp(name,"<")==0 || strcmp(name,">")==0 || strcmp(name,"<=")==0 || strcmp(name,">=")==0) ||
+        op->opno!=OpernameGetOprid(list_make2(makeString("pg_catalog"),makeString(name)),type,type)) return NULL;
+    for (side=0;side<2;side++)
+    {
+        Node *outer=list_nth(op->args,side);
+        Node *other=list_nth(op->args,1-side);
+        Node *extraction=outer;
+        Extraction out={0};
+        Managed *managed;
+        int slot;
+        JsonbValue *path;
+        Node *expression;
+        OpExpr *inner;
+        other=comparison_value(other);
+        if (other==NULL) continue;
+        if (IsA(extraction,CollateExpr)) extraction=(Node *)((CollateExpr *)extraction)->arg;
+        if (type==NUMERICOID || type==BOOLOID)
+        {
+            if (IsA(extraction,CoerceViaIO) && ((CoerceViaIO *)extraction)->resulttype==type)
+                extraction=(Node *)((CoerceViaIO *)extraction)->arg;
+            else continue;
+        }
+        if (!extract_path(extraction,&out) || !out.as_text || out.depth==0 ||
+            (managed=resolve_extraction(context,&out,&slot))==NULL || managed->row_security) continue;
+        path=getIthJsonbValueFromContainer(&managed->paths->root,slot);
+        if (JsonContainerSize(path->val.binary.data)!=out.depth) continue;
+        expression=registered_index_expression(managed,slot,type,op->inputcollid);
+        if (expression==NULL) continue;
+        inner=copyObject(op);
+        inner->args=side==0 ? list_make2(expression,copyObject(other)) : list_make2(copyObject(other),expression);
+        managed->query->jointree->quals=(Node *)makeBoolExpr(AND_EXPR,
+            list_make2(managed->query->jointree->quals ? managed->query->jointree->quals : (Node *)makeBoolConst(true,false),inner),-1);
+        return rewrite_expression(node,context);
+    }
+    return NULL;
 }
 
 /* The canonical view has no row restrictions or RLS. Push only builtin equality
@@ -534,9 +724,12 @@ rewrite_qual(Node *node, RewriteContext *context)
     {
         OpExpr *op = (OpExpr *) node;
         Oid type = InvalidOid;
+        Node *typed = typed_predicate(node,context);
         Oid equality;
+        char *operator;
         int side;
 
+        if (typed) return typed;
         if (list_length(op->args) != 2)
             return rewrite_expression(node, context);
         if (exprType(linitial(op->args)) == JSONBOID && exprType(lsecond(op->args)) == JSONBOID)
@@ -545,7 +738,11 @@ rewrite_qual(Node *node, RewriteContext *context)
             type = TEXTOID;
         if (!OidIsValid(type))
             return rewrite_expression(node, context);
-        equality = OpernameGetOprid(list_make2(makeString("pg_catalog"), makeString("=")),type,type);
+        operator=get_opname(op->opno);
+        if (operator==NULL || !(strcmp(operator,"=")==0 || strcmp(operator,"<")==0 ||
+            strcmp(operator,">")==0 || strcmp(operator,"<=")==0 || strcmp(operator,">=")==0))
+            return rewrite_expression(node,context);
+        equality = OpernameGetOprid(list_make2(makeString("pg_catalog"), makeString(operator)),type,type);
         if (op->opno != equality)
             return rewrite_expression(node, context);
         for (side = 0; side < 2; side++)
@@ -558,11 +755,11 @@ rewrite_qual(Node *node, RewriteContext *context)
 
             if ((!IsA(other, Const) && (!IsA(other, Param) || ((Param *) other)->paramkind != PARAM_EXTERN)) ||
                 !extract_path(extract, &out) || out.depth == 0 ||
-                (managed = resolve_extraction(context, &out, &slot)) == NULL)
+                (managed = resolve_extraction(context, &out, &slot)) == NULL || managed->row_security)
                 continue;
             {
                 OpExpr *inner = copyObject(op);
-                Node *hot = hot_value(managed, slot, out.as_text, true, exprCollation(extract));
+                Node *hot = extracted_hot(managed, slot, &out, true, exprCollation(extract));
 
                 inner->args = side == 0 ? list_make2(hot, copyObject(other)) : list_make2(copyObject(other), hot);
                 managed->query->jointree->quals = (Node *) makeBoolExpr(AND_EXPR,
@@ -612,6 +809,9 @@ rewrite_query(Query *query, Oid restore_oid)
 static PlannedStmt *
 splitjson_planner(Query *parse, const char *query_string, int cursor_options, ParamListInfo parameters)
 {
+    /* This authorization is required even with the optional rewrite disabled. */
+    if (!checking_registration)
+        splitjson_authorize_query(parse);
     if (!checking_registration && rewrite_enabled && OidIsValid(get_extension_oid("pg_splitjson", true)) &&
         OidIsValid(get_namespace_oid("splitjson", true)))
     {
@@ -646,6 +846,7 @@ assign_rewrite(bool value, void *extra)
 void
 _PG_init(void)
 {
+    splitjson_security_init();
     DefineCustomBoolVariable("splitjson.enable_query_rewrite", "Rewrite managed JSON hot paths during planning.",
                              NULL, &rewrite_enabled, true, PGC_USERSET, 0, NULL, assign_rewrite, NULL);
     previous_planner = planner_hook;
@@ -655,6 +856,7 @@ _PG_init(void)
 void
 _PG_fini(void)
 {
+    splitjson_security_fini();
     if (planner_hook == splitjson_planner)
         planner_hook = previous_planner;
 }

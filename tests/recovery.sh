@@ -8,6 +8,7 @@ lab=$2
 primary_data=$3
 primary_socket=$4
 primary_port=$5
+[[ "$lab" =~ ^/tmp/pg_splitjson-lab\.[a-zA-Z0-9]+$ && "$pgbin" = "$lab/pgsql/bin" && "$primary_data" = "$lab/data" && "$primary_socket" = "$lab/runtime/socket" && "$primary_port" = 65418 ]]
 run_as=${PG_SPLITJSON_RUN_AS:-$(id -un)}
 if [[ $(id -u) = 0 ]]; then
     run_pg() {
@@ -76,19 +77,19 @@ wait_query() {
 stop_cluster() {
     local data=$1 log=$2
     if [[ -f "$data/postmaster.pid" ]]; then
-        run_pg "$pgbin/pg_ctl" -D "$data" -m fast -t 30 -w stop >"$log" 2>&1 || true
+        run_pg "$pgbin/pg_ctl" -D "$data" -m fast -t 30 -w stop >"$log" 2>&1
     fi
 }
 cleanup() {
     local status=$?
-    stop_cluster "$pitr_data" "$root/pitr-stop.log"
-    stop_cluster "$standby_data" "$root/standby-stop.log"
+    stop_cluster "$pitr_data" "$root/pitr-stop.log" || status=1
+    stop_cluster "$standby_data" "$root/standby-stop.log" || status=1
     # If promotion stopped the primary, leave the lab in its original state so
     # lab.sh can perform its normal final cleanup.
     if [[ ! -f "$primary_data/postmaster.pid" ]]; then
         if [[ $(id -u) = 0 ]]; then chown -R "$run_as" "$primary_data"; fi
         run_pg "$pgbin/pg_ctl" -D "$primary_data" \
-            -l "$root/primary-restart.log" -o "-k $primary_socket -p $primary_port -c listen_addresses=''" -w start \
+            -l "$root/primary-restart.log" -o "-k $primary_socket -p $primary_port -c listen_addresses='' -c session_preload_libraries=pg_splitjson" -w start \
             >/dev/null 2>&1 || status=1
     fi
     exit "$status"
@@ -100,11 +101,19 @@ postgres_psql -c "DROP DATABASE IF EXISTS $db" >/dev/null
 postgres_psql -c "CREATE DATABASE $db" >/dev/null
 primary_psql <<'SQL'
 CREATE FUNCTION public.assert_true(p boolean,p_message text) RETURNS void
-LANGUAGE plpgsql AS $$ BEGIN IF NOT p THEN RAISE EXCEPTION 'assertion failed: %',p_message; END IF; END $$;
+LANGUAGE plpgsql AS $$ BEGIN IF p IS DISTINCT FROM true THEN RAISE EXCEPTION 'assertion failed: %',p_message; END IF; END $$;
 CREATE EXTENSION pg_splitjson;
 SELECT splitjson.create_table('public.recovery_docs','[["hot"]]');
 INSERT INTO recovery_docs VALUES (1,'{"hot":{"value":1},"cold":"before"}');
 SELECT splitjson.set_field('recovery_docs',1,ARRAY['hot','value'],'2');
+CREATE ROLE recovery_actor;
+SELECT splitjson.create_partitioned_table('public.recovery_part','[["n"]]','{"tenant":"name"}','{"strategy":"hash","modulus":2}');
+INSERT INTO recovery_part VALUES(1,'{"n":1,"cold":"recover"}','recovery_actor');
+SELECT splitjson.create_path_index('recovery_part','recovery_n_idx',ARRAY['n'],'numeric');
+SELECT splitjson.enable_rls('recovery_part');
+SELECT splitjson.set_policy('recovery_part','tenant','all',ARRAY['recovery_actor'],'tenant=current_user','tenant=current_user',false);
+SELECT splitjson.grant_access('recovery_part','recovery_actor','write');
+CREATE TABLE public.recovery_tokens AS SELECT splitjson.row_revision('recovery_docs',1) doc_token,splitjson.row_revision('recovery_part',1) part_token;
 SQL
 
 export PGHOST="$primary_socket" PGPORT="$primary_port" PGUSER="$run_as" PGDATABASE="$db"
@@ -120,12 +129,17 @@ sleep 1
 run_pg "$pgbin/pg_ctl" -D "$primary_data" -m immediate -t 30 -w stop >"$root/crash-stop.log" 2>&1
 wait "$writer" || true
 run_pg "$pgbin/pg_ctl" -D "$primary_data" -l "$root/crash-restart.log" \
-    -o "-k $primary_socket -p $primary_port -c listen_addresses=''" -w start >"$root/crash-start.log" 2>&1
+    -o "-k $primary_socket -p $primary_port -c listen_addresses='' -c session_preload_libraries=pg_splitjson" -w start >"$root/crash-start.log" 2>&1
 primary_psql <<'SQL'
 SELECT assert_true((SELECT doc->'hot'->'value'='2' AND doc->'cold'='"before"' FROM recovery_docs WHERE id=1),
                    'committed state survives immediate crash recovery');
 SELECT assert_true(NOT EXISTS (SELECT 1 FROM recovery_docs WHERE id=2),
                    'uncommitted row is absent after immediate crash recovery');
+SELECT splitjson.reinitialize_table('recovery_docs','recovery');
+SELECT splitjson.reinitialize_table('recovery_part','recovery');
+SELECT assert_true(splitjson.row_revision('recovery_docs',1)<>doc_token AND splitjson.row_revision('recovery_part',1)<>part_token,'crash recovery rotates retained document and partition token epochs') FROM recovery_tokens;
+SELECT splitjson.check_all(true);
+UPDATE recovery_tokens SET doc_token=splitjson.row_revision('recovery_docs',1),part_token=splitjson.row_revision('recovery_part',1);
 SQL
 
 printf '%s\n' '--- PITR ---'
@@ -158,12 +172,19 @@ printf '%s\n' \
 touch "$pitr_data/recovery.signal"
 if [[ $(id -u) = 0 ]]; then chown -R "$run_as" "$pitr_data"; fi
 run_pg "$pgbin/pg_ctl" -D "$pitr_data" -l "$root/pitr.log" \
-    -o "-k $pitr_socket -p $pitr_port -c listen_addresses=''" -w start >"$root/pitr-start.log" 2>&1
+    -o "-k $pitr_socket -p $pitr_port -c listen_addresses='' -c session_preload_libraries=pg_splitjson" -w start >"$root/pitr-start.log" 2>&1
 wait_query "$pitr_socket" "$pitr_port" "$db" "SELECT pg_is_in_recovery()" f
 secondary_psql "$pitr_socket" "$pitr_port" "$db" <<'SQL'
 SELECT assert_true(EXISTS (SELECT 1 FROM recovery_docs WHERE id=10), 'PITR restores committed state before target');
 SELECT assert_true(NOT EXISTS (SELECT 1 FROM recovery_docs WHERE id=11), 'PITR stops at named restore point');
 SELECT assert_true((SELECT doc->'hot'='10' FROM recovery_docs WHERE id=10), 'PITR restores split JSON payload');
+SELECT splitjson.reinitialize_table('recovery_docs','recovery');
+SELECT splitjson.reinitialize_table('recovery_part','recovery');
+SELECT assert_true(splitjson.row_revision('recovery_docs',1)<>doc_token AND splitjson.row_revision('recovery_part',1)<>part_token,'PITR rejects pre-recovery token epochs') FROM recovery_tokens;
+SET ROLE recovery_actor;
+SELECT assert_true(splitjson.increment_field('recovery_part',1,ARRAY['n'])=2,'PITR preserves native RLS/partition/index and allows a local actor hot write');
+RESET ROLE;
+SELECT splitjson.check_all(true);
 SQL
 stop_cluster "$pitr_data" "$root/pitr-stop.log"
 
@@ -174,7 +195,7 @@ run_pg "$pgbin/pg_basebackup" -h "$primary_socket" -p "$primary_port" -U "$run_a
 printf '%s\n' "port = $standby_port" "unix_socket_directories = '$standby_socket'" "listen_addresses = ''" >>"$standby_data/postgresql.auto.conf"
 if [[ $(id -u) = 0 ]]; then chown -R "$run_as" "$standby_data"; fi
 run_pg "$pgbin/pg_ctl" -D "$standby_data" -l "$root/standby.log" \
-    -o "-k $standby_socket -p $standby_port -c listen_addresses=''" -w start >"$root/standby-start.log" 2>&1
+    -o "-k $standby_socket -p $standby_port -c listen_addresses='' -c session_preload_libraries=pg_splitjson" -w start >"$root/standby-start.log" 2>&1
 wait_query "$standby_socket" "$standby_port" "$db" "SELECT pg_is_in_recovery()" t
 primary_psql -c "INSERT INTO recovery_docs VALUES (20,'{\"hot\":20,\"cold\":\"streamed\"}')" >/dev/null
 primary_psql -c "SELECT pg_switch_wal(),pg_switch_wal()" >/dev/null
@@ -182,6 +203,15 @@ wait_query "$standby_socket" "$standby_port" "$db" "SELECT count(*) FROM recover
 run_pg "$pgbin/pg_ctl" -D "$primary_data" -m fast -t 30 -w stop >"$root/primary-before-promote.log" 2>&1
 run_pg "$pgbin/pg_ctl" -D "$standby_data" promote >"$root/promote.log" 2>&1
 wait_query "$standby_socket" "$standby_port" "$db" "SELECT pg_is_in_recovery()" f
+secondary_psql "$standby_socket" "$standby_port" "$db" <<'SQL'
+SELECT splitjson.reinitialize_table('recovery_docs','takeover');
+SELECT splitjson.reinitialize_table('recovery_part','takeover');
+SELECT assert_true(splitjson.row_revision('recovery_docs',1)<>doc_token AND splitjson.row_revision('recovery_part',1)<>part_token,'physical promotion initializes fresh epochs and generators') FROM recovery_tokens;
+SET ROLE recovery_actor;
+SELECT assert_true(splitjson.increment_field('recovery_part',1,ARRAY['n'])=2,'promoted physical target retains RLS and typed hot index behavior');
+RESET ROLE;
+SELECT splitjson.check_all(true);
+SQL
 secondary_psql "$standby_socket" "$standby_port" "$db" -c "SELECT splitjson.set_field('recovery_docs',20,ARRAY['hot'],'21')" >/dev/null
 secondary_psql "$standby_socket" "$standby_port" "$db" -c \
     "SELECT assert_true((SELECT doc->'hot'='21' FROM recovery_docs WHERE id=20),'promoted standby accepts split JSON writes')"
